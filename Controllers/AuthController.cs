@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.DirectoryServices.AccountManagement;
+using System.Security.Claims;
 
 namespace Drop1.Api.Controllers;
 
@@ -62,9 +63,18 @@ public class AuthController : ControllerBase
         if (!valid) return Unauthorized("Invalid credentials.");
 
         // 3) Create session
-        HttpContext.Session.SetInt32("UserID", user.UserID);
+        HttpContext.Session.SetString("UserID", user.UserID.ToString());
         HttpContext.Session.SetString("FullName", user.FullName);
         HttpContext.Session.SetString("Department", user.Department ?? "");
+
+        // ✅ Also add claims so controllers like UploadFolder can use User.FindFirstValue
+        var claims = new List<Claim>
+        {
+            new Claim(ClaimTypes.NameIdentifier, user.UserID.ToString()),
+            new Claim(ClaimTypes.Name, user.FullName ?? "")
+        };
+        var identity = new ClaimsIdentity(claims, "session");
+        HttpContext.User = new ClaimsPrincipal(identity);
 
         return Ok(new
         {
@@ -83,8 +93,12 @@ public class AuthController : ControllerBase
     [HttpGet("me")]
     public IActionResult Me()
     {
-        var uid = HttpContext.Session.GetInt32("UserID");
-        if (uid is null) return Unauthorized("Not logged in");
+        var uidString = HttpContext.Session.GetString("UserID");
+        if (string.IsNullOrEmpty(uidString))
+            return Unauthorized("Not logged in");
+
+        var uid = long.Parse(uidString);
+
         return Ok(new
         {
             UserID = uid,

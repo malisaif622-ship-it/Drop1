@@ -10,6 +10,8 @@ builder.Services.AddDbContext<AppDbContext>(options =>
 // ✅ 2) Add Controllers
 builder.Services.AddControllers();
 
+builder.Services.AddSingleton<IConfiguration>(builder.Configuration);
+
 // ✅ 3) Enable Swagger
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();

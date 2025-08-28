@@ -21,5 +21,15 @@ public class AppDbContext : DbContext
             .WithMany()
             .HasForeignKey(f => f.ParentFolderID)
             .OnDelete(DeleteBehavior.NoAction);
+
+        modelBuilder.Entity<User>()
+            .Property(u => u.UsedStorageMB)
+            .HasColumnType("decimal(18,4)"); // 18 total digits, 4 after decimal
+
+        modelBuilder.Entity<FileItem>()
+            .Property(f => f.FileSizeMB)
+            .HasColumnType("decimal(18,4)");
+
     }
+
 }

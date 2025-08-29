@@ -1,14 +1,18 @@
 ﻿using Drop1.Api.Data;
+using Drop1.Api.Models;
 using Drop1.Models;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Hosting.Internal;
 using System;
+using System.Collections.Generic;
 using System.IO;
-using System.IO.Compression; // if you want zipped uploads
-using System.Security.Claims; // for getting userId
+using System.IO.Compression;
 using System.Linq;
 using System.Threading.Tasks;
-using Drop1.Api.Models;
+using System.Security.Claims;
 
 namespace Drop1.Api.Controllers
 {
@@ -18,10 +22,12 @@ namespace Drop1.Api.Controllers
     {
         private readonly AppDbContext _context;
         private readonly string _basePath = @"C:\Drop1\";  // Storage root
+        private readonly IWebHostEnvironment _hostingEnvironment;
 
-        public FolderController(AppDbContext context)
+        public FolderController(AppDbContext context, IWebHostEnvironment hostingEnvironment)
         {
             _context = context;
+            _hostingEnvironment = hostingEnvironment;
         }
 
         [HttpPost("create")]
@@ -334,6 +340,173 @@ namespace Drop1.Api.Controllers
             await _context.SaveChangesAsync();
 
             return Ok("Folder uploaded successfully with hierarchy.");
+        }
+
+
+
+
+
+
+
+        [HttpPut("rename")]
+        public async Task<IActionResult> RenameFolder(int folderId, string newName)
+        {
+            var userId = HttpContext.Session.GetString("UserID");
+            if (userId == null)
+                return Unauthorized("User not logged in.");
+
+            // ✅ 1) Get folder from DB
+            var folder = await _context.Folders.FirstOrDefaultAsync(f => f.FolderID == folderId && f.UserID.ToString() == userId);
+            if (folder == null)
+                return NotFound("Folder not found.");
+
+            // ✅ 2) Save old paths before changes
+            string oldFolderPath = folder.FolderPath;
+            string oldFolderName = folder.FolderName;
+
+            // ✅ 3) Parent directory
+            string? parentPath = Path.GetDirectoryName(oldFolderPath);
+
+            // ✅ 4) Ensure unique name (like Windows Explorer renaming)
+            string finalName = newName;
+            int counter = 2;
+            while (await _context.Folders.AnyAsync(f =>
+                f.UserID.ToString() == userId &&
+                f.FolderID != folderId &&
+                f.FolderPath == Path.Combine(parentPath ?? "", finalName)))
+            {
+                finalName = $"{newName} ({counter++})";
+            }
+
+            // ✅ 5) Compute new folder path
+            string newFolderPath = Path.Combine(parentPath ?? "", finalName);
+
+            // ✅ 6) Physical paths
+            var rootPath = Path.Combine(_hostingEnvironment.ContentRootPath, "UserData", userId);
+            var oldPhysicalPath = Path.Combine(rootPath, oldFolderPath);
+            var newPhysicalPath = Path.Combine(rootPath, newFolderPath);
+
+            // ✅ 7) Rename physically on disk
+            if (Directory.Exists(oldPhysicalPath))
+            {
+                Directory.Move(oldPhysicalPath, newPhysicalPath);
+            }
+
+            // ✅ 8) Update DB
+            folder.FolderName = finalName;
+            folder.FolderPath = newFolderPath;
+
+            // Update child folders
+            var childFolders = await _context.Folders
+                .Where(f => f.UserID.ToString() == userId && f.FolderPath.StartsWith(oldFolderPath))
+                .ToListAsync();
+
+            foreach (var child in childFolders)
+            {
+                child.FolderPath = child.FolderPath.Replace(oldFolderPath, newFolderPath);
+            }
+
+            // Update child files
+            var childFiles = await _context.Files
+                .Where(f => f.UserID.ToString() == userId && f.FilePath.StartsWith(oldFolderPath))
+                .ToListAsync();
+
+            foreach (var file in childFiles)
+            {
+                file.FilePath = file.FilePath.Replace(oldFolderPath, newFolderPath);
+            }
+
+            await _context.SaveChangesAsync();
+
+            return Ok(new { message = "Folder renamed successfully", newName = finalName });
+        }
+
+
+
+
+
+
+
+        [HttpDelete("delete")]
+        public async Task<IActionResult> DeleteFolder(int folderId)
+        {
+            var userId = HttpContext.Session.GetString("UserID");
+            if (userId == null)
+                return Unauthorized("User not logged in.");
+
+            // 1) Find the folder in DB
+            var folder = await _context.Folders
+                .FirstOrDefaultAsync(f => f.FolderID == folderId && f.UserID.ToString() == userId);
+            if (folder == null)
+                return NotFound("Folder not found.");
+
+            // 2) User root folder
+            var userRootPath = Path.Combine(_hostingEnvironment.ContentRootPath, "UserData", userId);
+
+            // 3) RecycleBin path inside the user folder
+            var recycleBinPath = Path.Combine(userRootPath, "RecycleBin");
+
+            // ✅ Create RecycleBin if it doesn’t exist
+            if (!Directory.Exists(recycleBinPath))
+                Directory.CreateDirectory(recycleBinPath);
+
+            // 4) Physical path of the folder being deleted
+            string folderPhysicalPath = Path.Combine(userRootPath, folder.FolderPath);
+            if (!Directory.Exists(folderPhysicalPath))
+                return NotFound("Physical folder not found.");
+
+            // 5) Unique folder name inside RecycleBin
+            string recycleFolderName = folder.FolderName;
+            string recycleDestinationPath = Path.Combine(recycleBinPath, recycleFolderName);
+            int counter = 2;
+
+            while (Directory.Exists(recycleDestinationPath))
+            {
+                recycleFolderName = $"{folder.FolderName} ({counter})";
+                recycleDestinationPath = Path.Combine(recycleBinPath, recycleFolderName);
+                counter++;
+            }
+
+            // 6) Copy folder to RecycleBin, then delete source
+            CopyDirectory(folderPhysicalPath, recycleDestinationPath);
+            Directory.Delete(folderPhysicalPath, true);
+
+            // 7) Update DB → mark folder & files as deleted
+            var foldersToDelete = await _context.Folders
+                .Where(f => f.UserID.ToString() == userId && f.FolderPath.StartsWith(folder.FolderPath))
+                .ToListAsync();
+
+            foreach (var f in foldersToDelete)
+                f.IsDeleted = true;
+
+            var filesToDelete = await _context.Files
+                .Where(f => f.UserID.ToString() == userId && f.FilePath.StartsWith(folder.FolderPath))
+                .ToListAsync();
+
+            foreach (var file in filesToDelete)
+                file.IsDeleted = true;
+
+            await _context.SaveChangesAsync();
+
+            return Ok(new { message = $"Folder moved to RecycleBin as {recycleFolderName}" });
+        }
+
+        // ✅ Recursive safe copy method
+        private void CopyDirectory(string sourceDir, string destDir)
+        {
+            Directory.CreateDirectory(destDir);
+
+            foreach (string file in Directory.GetFiles(sourceDir))
+            {
+                string targetFilePath = Path.Combine(destDir, Path.GetFileName(file));
+                System.IO.File.Copy(file, targetFilePath, true);
+            }
+
+            foreach (string directory in Directory.GetDirectories(sourceDir))
+            {
+                string targetDirPath = Path.Combine(destDir, Path.GetFileName(directory));
+                CopyDirectory(directory, targetDirPath);
+            }
         }
     }
 }

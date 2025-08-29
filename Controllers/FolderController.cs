@@ -1,4 +1,4 @@
-﻿using Drop1.Api.Data;
+using Drop1.Api.Data;
 using Drop1.Api.Models;
 using Drop1.Models;
 using Microsoft.AspNetCore.Hosting;
@@ -163,13 +163,6 @@ namespace Drop1.Api.Controllers
             if (uploadedFiles == null || uploadedFiles.Count == 0)
                 return BadRequest("No folder uploaded.");
 
-            if (uploadedFiles.Count == 1)
-            {
-                var onlyName = uploadedFiles[0].FileName ?? "";
-                if (!onlyName.Contains("/") && !onlyName.Contains("\\"))
-                    return BadRequest("Only folders can be uploaded. Please select a folder (not a single file).");
-            }
-
             // ---------- 3) Ensure root path ----------
             var userRootPath = Path.Combine("C:\\Drop1", userId.ToString());
             if (!Directory.Exists(userRootPath))
@@ -179,7 +172,7 @@ namespace Drop1.Api.Controllers
             if (parentFolderId != null)
             {
                 var parentFolder = await _context.Folders
-                    .FirstOrDefaultAsync(f => f.FolderID == parentFolderId && f.UserID == userId);
+                    .FirstOrDefaultAsync(f => f.FolderID == parentFolderId && f.UserID == userId && !f.IsDeleted);
                 if (parentFolder == null)
                     return BadRequest("Parent folder not found.");
                 parentPath = parentFolder.FolderPath;
@@ -356,7 +349,7 @@ namespace Drop1.Api.Controllers
                 return Unauthorized("User not logged in.");
 
             // ✅ 1) Get folder from DB
-            var folder = await _context.Folders.FirstOrDefaultAsync(f => f.FolderID == folderId && f.UserID.ToString() == userId);
+            var folder = await _context.Folders.FirstOrDefaultAsync(f => f.FolderID == folderId && f.UserID.ToString() == userId && !f.IsDeleted);
             if (folder == null)
                 return NotFound("Folder not found.");
 
@@ -430,83 +423,236 @@ namespace Drop1.Api.Controllers
         [HttpDelete("delete")]
         public async Task<IActionResult> DeleteFolder(int folderId)
         {
-            var userId = HttpContext.Session.GetString("UserID");
-            if (userId == null)
-                return Unauthorized("User not logged in.");
+            var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? HttpContext.Session.GetString("UserID");
+            if (string.IsNullOrEmpty(userIdStr))
+                return Unauthorized();
 
-            // 1) Find the folder in DB
+            int userId = int.Parse(userIdStr);
+
+            // ✅ 1) Get the folder to delete
             var folder = await _context.Folders
-                .FirstOrDefaultAsync(f => f.FolderID == folderId && f.UserID.ToString() == userId);
+                .FirstOrDefaultAsync(f => f.FolderID == folderId && f.UserID == userId && !f.IsDeleted);
+
             if (folder == null)
                 return NotFound("Folder not found.");
 
-            // 2) User root folder
-            var userRootPath = Path.Combine(_hostingEnvironment.ContentRootPath, "UserData", userId);
+            string folderPath = folder.FolderPath;
 
-            // 3) RecycleBin path inside the user folder
-            var recycleBinPath = Path.Combine(userRootPath, "RecycleBin");
+            // ✅ 2) User root
+            var userRoot = Path.Combine(_basePath, userId.ToString());
 
-            // ✅ Create RecycleBin if it doesn’t exist
-            if (!Directory.Exists(recycleBinPath))
-                Directory.CreateDirectory(recycleBinPath);
-
-            // 4) Physical path of the folder being deleted
-            string folderPhysicalPath = Path.Combine(userRootPath, folder.FolderPath);
-            if (!Directory.Exists(folderPhysicalPath))
-                return NotFound("Physical folder not found.");
-
-            // 5) Unique folder name inside RecycleBin
-            string recycleFolderName = folder.FolderName;
-            string recycleDestinationPath = Path.Combine(recycleBinPath, recycleFolderName);
-            int counter = 2;
-
-            while (Directory.Exists(recycleDestinationPath))
+            // ✅ 3) RecycleBin inside user's root
+            var recycleBinPath = Path.Combine(userRoot, "RecycleBin");
+            try
             {
-                recycleFolderName = $"{folder.FolderName} ({counter})";
-                recycleDestinationPath = Path.Combine(recycleBinPath, recycleFolderName);
-                counter++;
+                if (!Directory.Exists(recycleBinPath))
+                    Directory.CreateDirectory(recycleBinPath);
+            }
+            catch
+            {
+                return StatusCode(500, "Error creating recycle bin directory.");
             }
 
-            // 6) Copy folder to RecycleBin, then delete source
-            CopyDirectory(folderPhysicalPath, recycleDestinationPath);
-            Directory.Delete(folderPhysicalPath, true);
+            // ✅ 4) Ensure unique name in RecycleBin
+            string folderName = Path.GetFileName(folderPath);
+            string destinationPath = Path.Combine(recycleBinPath, folderName);
+            int counter = 2;
+            while (Directory.Exists(destinationPath))
+            {
+                destinationPath = Path.Combine(recycleBinPath, $"{folderName} ({counter++})");
+            }
 
-            // 7) Update DB → mark folder & files as deleted
-            var foldersToDelete = await _context.Folders
-                .Where(f => f.UserID.ToString() == userId && f.FolderPath.StartsWith(folder.FolderPath))
+            // ✅ 5) Move physically
+            try
+            {
+                Directory.Move(folderPath, destinationPath);
+            }
+            catch
+            {
+                return StatusCode(500, "Error moving folder to recycle bin.");
+            }
+
+            // ✅ 6) Mark only this folder, its subfolders and contained files as deleted
+            // Get all subfolders (direct + nested)
+            var affectedFolders = await _context.Folders
+                .Where(f => f.UserID == userId && f.FolderPath.StartsWith(folderPath + Path.DirectorySeparatorChar))
                 .ToListAsync();
 
-            foreach (var f in foldersToDelete)
+            // Add the folder itself
+            affectedFolders.Add(folder);
+
+            foreach (var f in affectedFolders)
+            {
                 f.IsDeleted = true;
+                // ❌ Don't touch FolderPath (keep original for restore)
+            }
 
-            var filesToDelete = await _context.Files
-                .Where(f => f.UserID.ToString() == userId && f.FilePath.StartsWith(folder.FolderPath))
+            // Get all files inside this folder or its subfolders
+            var affectedFiles = await _context.Files
+                .Where(file => file.UserID == userId &&
+                               (file.FilePath.StartsWith(folderPath + Path.DirectorySeparatorChar) ||
+                                file.FilePath.StartsWith(folderPath + Path.AltDirectorySeparatorChar)))
                 .ToListAsync();
 
-            foreach (var file in filesToDelete)
+            foreach (var file in affectedFiles)
+            {
                 file.IsDeleted = true;
+                // ❌ Don't touch FilePath (keep original for restore)
+            }
 
             await _context.SaveChangesAsync();
 
-            return Ok(new { message = $"Folder moved to RecycleBin as {recycleFolderName}" });
+            return Ok(new { message = "Folder moved to recycle bin successfully." });
         }
 
-        // ✅ Recursive safe copy method
-        private void CopyDirectory(string sourceDir, string destDir)
+
+
+
+
+
+
+        [HttpPut("recover/{folderId}")]
+        public async Task<IActionResult> RecoverFolder(int folderId)
         {
-            Directory.CreateDirectory(destDir);
+            // 0) Auth
+            var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? HttpContext.Session.GetString("UserID");
+            if (string.IsNullOrEmpty(userIdStr))
+                return Unauthorized();
 
-            foreach (string file in Directory.GetFiles(sourceDir))
+            int userId = int.Parse(userIdStr);
+
+            // 1) Load the target folder (must be deleted)
+            var folder = await _context.Folders
+                .FirstOrDefaultAsync(f => f.FolderID == folderId && f.UserID == userId && f.IsDeleted);
+
+            if (folder == null)
+                return NotFound("Deleted folder not found.");
+
+            string originalFolderPath = folder.FolderPath; // original path (unchanged on delete)
+            string folderName = Path.GetFileName(originalFolderPath);
+            string originalParent = Path.GetDirectoryName(originalFolderPath)!;
+
+            // 2) Build user root + RecycleBin path
+            var userRoot = Path.Combine(_basePath, userId.ToString());
+            var recycleBinPath = Path.Combine(userRoot, "RecycleBin");
+
+            if (!Directory.Exists(recycleBinPath))
+                return NotFound("Recycle Bin not found for this user.");
+
+            // 3) Locate the folder inside RecycleBin
+            string? recycleCurrentPath = null;
+            var exactCandidate = Path.Combine(recycleBinPath, folderName);
+            if (Directory.Exists(exactCandidate))
             {
-                string targetFilePath = Path.Combine(destDir, Path.GetFileName(file));
-                System.IO.File.Copy(file, targetFilePath, true);
+                recycleCurrentPath = exactCandidate;
+            }
+            else
+            {
+                var candidates = Directory.GetDirectories(recycleBinPath, folderName + "*", SearchOption.TopDirectoryOnly)
+                    .Where(d =>
+                    {
+                        var dn = Path.GetFileName(d)!;
+                        if (dn.Equals(folderName, StringComparison.OrdinalIgnoreCase)) return true;
+                        return System.Text.RegularExpressions.Regex.IsMatch(
+                            dn, "^" + System.Text.RegularExpressions.Regex.Escape(folderName) + @" \(\d+\)$",
+                            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                    })
+                    .OrderByDescending(d => System.IO.Directory.GetLastWriteTime(d))
+                    .ToList();
+
+                recycleCurrentPath = candidates.FirstOrDefault();
             }
 
-            foreach (string directory in Directory.GetDirectories(sourceDir))
+            if (string.IsNullOrEmpty(recycleCurrentPath) || !Directory.Exists(recycleCurrentPath))
+                return NotFound("Folder not found inside Recycle Bin.");
+
+            // 4) Ensure original parent path exists
+            if (!Directory.Exists(originalParent))
+                Directory.CreateDirectory(originalParent);
+
+            // 5) Resolve name conflict: if folder exists, append (2), (3), etc.
+            string targetFolderPath = originalFolderPath;
+            string baseName = folderName;
+            int counter = 2;
+            while (Directory.Exists(targetFolderPath))
             {
-                string targetDirPath = Path.Combine(destDir, Path.GetFileName(directory));
-                CopyDirectory(directory, targetDirPath);
+                string newName = $"{baseName} ({counter})";
+                targetFolderPath = Path.Combine(originalParent, newName);
+                counter++;
             }
+
+            string finalFolderName = Path.GetFileName(targetFolderPath);
+
+            // 6) Move physical folder
+            try
+            {
+                Directory.Move(recycleCurrentPath, targetFolderPath);
+            }
+            catch
+            {
+                return StatusCode(500, "Failed to move folder back from Recycle Bin.");
+            }
+
+            // 7) Cascade DB restore: update paths + set IsDeleted = false
+            string sep = Path.DirectorySeparatorChar.ToString();
+            string alt = Path.AltDirectorySeparatorChar.ToString();
+
+            string prefixA = originalFolderPath.EndsWith(sep) ? originalFolderPath : originalFolderPath + sep;
+            string prefixB = originalFolderPath.EndsWith(alt) ? originalFolderPath : originalFolderPath + alt;
+
+            string newPrefix = targetFolderPath.EndsWith(sep) ? targetFolderPath : targetFolderPath + sep;
+
+            // restore folders
+            var foldersToRestore = await _context.Folders
+                .Where(f =>
+                    f.UserID == userId &&
+                    f.IsDeleted &&
+                    (f.FolderID == folderId ||
+                     f.FolderPath.StartsWith(prefixA) ||
+                     f.FolderPath.StartsWith(prefixB)))
+                .ToListAsync();
+
+            foreach (var fld in foldersToRestore)
+            {
+                fld.IsDeleted = false;
+
+                // adjust path if needed
+                if (fld.FolderPath == originalFolderPath)
+                {
+                    fld.FolderPath = targetFolderPath;
+
+                    fld.FolderName = finalFolderName;
+                }
+                else if (fld.FolderPath.StartsWith(prefixA))
+                {
+                    fld.FolderPath = fld.FolderPath.Replace(prefixA, newPrefix);
+                }
+                else if (fld.FolderPath.StartsWith(prefixB))
+                {
+                    fld.FolderPath = fld.FolderPath.Replace(prefixB, newPrefix);
+                }
+            }
+
+            // restore files
+            var filesToRestore = await _context.Files
+                .Where(file =>
+                    file.UserID == userId &&
+                    file.IsDeleted &&
+                    (file.FilePath.StartsWith(prefixA) || file.FilePath.StartsWith(prefixB)))
+                .ToListAsync();
+
+            foreach (var fl in filesToRestore)
+            {
+                fl.IsDeleted = false;
+                if (fl.FilePath.StartsWith(prefixA))
+                    fl.FilePath = fl.FilePath.Replace(prefixA, newPrefix);
+                else if (fl.FilePath.StartsWith(prefixB))
+                    fl.FilePath = fl.FilePath.Replace(prefixB, newPrefix);
+            }
+
+            await _context.SaveChangesAsync();
+
+            return Ok(new { message = $"Folder restored successfully as '{finalFolderName}'." });
         }
     }
 }

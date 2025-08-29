@@ -2,3 +2,7 @@
 bin/
 obj/
 Migrations/
+*.exe
+*.dll
+*.pdb
+*.cache

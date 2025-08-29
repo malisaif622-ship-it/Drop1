@@ -2,15 +2,17 @@
 using Drop1.Api.Models;
 using Drop1.Models;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Hosting.Internal;
 using System;
+using System.Collections.Generic;
 using System.IO;
-using System.IO.Compression; // if you want zipped uploads
+using System.IO.Compression;
 using System.Linq;
-using System.Security.Claims; // for getting userId
 using System.Threading.Tasks;
+using System.Security.Claims;
 
 namespace Drop1.Api.Controllers
 {

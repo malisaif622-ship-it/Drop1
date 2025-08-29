@@ -425,6 +425,86 @@ namespace Drop1.Api.Controllers
 
 
 
+        [HttpDelete("delete")]
+        public async Task<IActionResult> DeleteFolder(int folderId)
+        {
+            var userId = HttpContext.Session.GetString("UserID");
+            if (userId == null)
+                return Unauthorized("User not logged in.");
 
+            // 1) Find the folder in DB
+            var folder = await _context.Folders
+                .FirstOrDefaultAsync(f => f.FolderID == folderId && f.UserID.ToString() == userId);
+            if (folder == null)
+                return NotFound("Folder not found.");
+
+            // 2) User root folder
+            var userRootPath = Path.Combine(_hostingEnvironment.ContentRootPath, "UserData", userId);
+
+            // 3) RecycleBin path inside the user folder
+            var recycleBinPath = Path.Combine(userRootPath, "RecycleBin");
+
+            // ✅ Create RecycleBin if it doesn’t exist
+            if (!Directory.Exists(recycleBinPath))
+                Directory.CreateDirectory(recycleBinPath);
+
+            // 4) Physical path of the folder being deleted
+            string folderPhysicalPath = Path.Combine(userRootPath, folder.FolderPath);
+            if (!Directory.Exists(folderPhysicalPath))
+                return NotFound("Physical folder not found.");
+
+            // 5) Unique folder name inside RecycleBin
+            string recycleFolderName = folder.FolderName;
+            string recycleDestinationPath = Path.Combine(recycleBinPath, recycleFolderName);
+            int counter = 2;
+
+            while (Directory.Exists(recycleDestinationPath))
+            {
+                recycleFolderName = $"{folder.FolderName} ({counter})";
+                recycleDestinationPath = Path.Combine(recycleBinPath, recycleFolderName);
+                counter++;
+            }
+
+            // 6) Copy folder to RecycleBin, then delete source
+            CopyDirectory(folderPhysicalPath, recycleDestinationPath);
+            Directory.Delete(folderPhysicalPath, true);
+
+            // 7) Update DB → mark folder & files as deleted
+            var foldersToDelete = await _context.Folders
+                .Where(f => f.UserID.ToString() == userId && f.FolderPath.StartsWith(folder.FolderPath))
+                .ToListAsync();
+
+            foreach (var f in foldersToDelete)
+                f.IsDeleted = true;
+
+            var filesToDelete = await _context.Files
+                .Where(f => f.UserID.ToString() == userId && f.FilePath.StartsWith(folder.FolderPath))
+                .ToListAsync();
+
+            foreach (var file in filesToDelete)
+                file.IsDeleted = true;
+
+            await _context.SaveChangesAsync();
+
+            return Ok(new { message = $"Folder moved to RecycleBin as {recycleFolderName}" });
+        }
+
+        // ✅ Recursive safe copy method
+        private void CopyDirectory(string sourceDir, string destDir)
+        {
+            Directory.CreateDirectory(destDir);
+
+            foreach (string file in Directory.GetFiles(sourceDir))
+            {
+                string targetFilePath = Path.Combine(destDir, Path.GetFileName(file));
+                System.IO.File.Copy(file, targetFilePath, true);
+            }
+
+            foreach (string directory in Directory.GetDirectories(sourceDir))
+            {
+                string targetDirPath = Path.Combine(destDir, Path.GetFileName(directory));
+                CopyDirectory(directory, targetDirPath);
+            }
+        }
     }
 }

@@ -1,0 +1,27 @@
+1.Create a new folder.(Done)
+
+2.Upload a folder (and its hierarchy).(Done)
+
+3.Rename a folder.(B)
+
+4.Delete (soft delete → isDeleted=true, move to recycle bin).(B)
+
+5.Recover from recycle bin.(B)
+
+6.Download a folder.(A)
+
+7.Move/drag folder from one location to another (updates parentFolderId + path both in DB and physically).(A)
+
+8.Get folder details (size, created date, path, etc.).(A)
+
+
+
+files can be of same name but diff types
+
+"StorageSettings": {
+  "RootPath": "C:\\Drop1"
+}
+letmein123
+"ConnectionStrings": {
+  "DefaultConnection": "Server=DESKTOP-VA8FMH3;Database=FileShareApp;User Id=sa;Password=abc;Trusted_Connection=True;TrustServerCertificate=True;"
+}

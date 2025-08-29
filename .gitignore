@@ -1,2 +1,8 @@
 .vs/
--enbin/\nobj/
+bin/
+obj/
+Migrations/
+*.exe
+*.dll
+*.pdb
+*.cache

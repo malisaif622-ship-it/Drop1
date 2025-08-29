@@ -1,4 +1,4 @@
-﻿using Drop1.Api.Data;
+using Drop1.Api.Data;
 using Drop1.Api.Models;
 using Drop1.Models;
 using Microsoft.AspNetCore.Hosting;

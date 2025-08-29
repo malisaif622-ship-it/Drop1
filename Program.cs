@@ -27,16 +27,25 @@ builder.Services.AddSession(options =>
     options.Cookie.IsEssential = true;
 });
 
-// ✅ 5) Enable CORS (optional but useful for frontend)
+// ✅ 5) Enable CORS
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowAll", policy =>
         policy.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod());
 });
 
+// ✅ 6) Add Authentication (using Cookie/Session)
+builder.Services.AddAuthentication("Cookies")
+    .AddCookie("Cookies", options =>
+    {
+        options.LoginPath = "/Auth/Login";  // change if needed
+        options.LogoutPath = "/Auth/Logout";
+        options.AccessDeniedPath = "/Auth/AccessDenied";
+    });
+
 var app = builder.Build();
 
-// ✅ 6) Middleware
+// ✅ 7) Middleware
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
@@ -49,6 +58,8 @@ app.UseCors("AllowAll");
 
 app.UseSession();
 
+// 🔑 Must be in this order
+app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapControllers();

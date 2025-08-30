@@ -4,8 +4,8 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System;
 using System.IO;
-using System.IO.Compression; // if you want zipped uploads
-using System.Security.Claims; // for getting userId
+using System.IO.Compression;
+using System.Security.Claims;
 using System.Linq;
 using System.Threading.Tasks;
 using Drop1.Api.Models;
@@ -17,69 +17,41 @@ namespace Drop1.Api.Controllers
     public class FolderController : ControllerBase
     {
         private readonly AppDbContext _context;
-        private readonly string _basePath = @"C:\Drop1\";  // Storage root
+        private readonly string _basePath = @"C:\PROJECTS\Drop1(proj data folder)\";  // Storage root
 
         public FolderController(AppDbContext context)
         {
             _context = context;
         }
 
+        // =========================
+        // CREATE FOLDER API
+        // =========================
         [HttpPost("create")]
         public async Task<IActionResult> CreateFolder([FromQuery] string folderName, [FromQuery] int? parentFolderId)
         {
             var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? HttpContext.Session.GetString("UserID");
-            if (string.IsNullOrEmpty(userIdStr))
-                return Unauthorized();
-
+            if (string.IsNullOrEmpty(userIdStr)) return Unauthorized();
             int userId = int.Parse(userIdStr);
-            // 1) Validate input
-            if (string.IsNullOrWhiteSpace(folderName))
-                return BadRequest("Folder name cannot be empty.");
 
+            if (string.IsNullOrWhiteSpace(folderName)) return BadRequest("Folder name cannot be empty.");
             folderName = folderName.Trim();
 
-            // 2) Ensure user exists
             var user = await _context.Users.FirstOrDefaultAsync(u => u.UserID == userId);
             if (user == null) return NotFound("User not found.");
 
-            // 3) Ensure user root exists (lazy creation)
             var userRoot = Path.Combine(_basePath, userId.ToString());
-            try
-            {
-                Directory.CreateDirectory(userRoot); // no-op if exists
-            }
-            catch (Exception)
-            {
-                return StatusCode(500, "Server error creating user storage directory.");
-            }
+            Directory.CreateDirectory(userRoot);
 
-            // 4) Resolve parent path (use userRoot when parent == null)
             string parentPath = userRoot;
             if (parentFolderId.HasValue)
             {
                 var parentFolder = await _context.Folders.FirstOrDefaultAsync(f =>
                     f.FolderID == parentFolderId.Value && f.UserID == userId && !f.IsDeleted);
-
-                if (parentFolder == null)
-                    return NotFound("Parent folder not found.");
-
+                if (parentFolder == null) return NotFound("Parent folder not found.");
                 parentPath = string.IsNullOrWhiteSpace(parentFolder.FolderPath) ? userRoot : parentFolder.FolderPath;
             }
 
-            // Security check: ensure parentPath is inside user's root to avoid path escapes
-            try
-            {
-                var normalizedParent = Path.GetFullPath(parentPath);
-                var normalizedUserRoot = Path.GetFullPath(userRoot);
-                if (!normalizedParent.StartsWith(normalizedUserRoot, StringComparison.OrdinalIgnoreCase))
-                    return BadRequest("Invalid parent folder location.");
-            }
-            catch (Exception)
-            {
-                return BadRequest("Invalid parent folder path.");
-            }
-
-            // 5) Compute unique name among siblings (DB + disk)
             var siblings = await _context.Folders
                 .Where(f => f.UserID == userId && f.ParentFolderID == parentFolderId && !f.IsDeleted)
                 .Select(f => f.FolderName)
@@ -96,21 +68,9 @@ namespace Drop1.Api.Controllers
                 counter++;
             }
 
-            // 6) Enforce 500 char max for FolderPath (your model constraint)
-            if (newFolderPath.Length > 500)
-                return BadRequest("Folder path exceeds maximum length of 500 characters.");
+            if (newFolderPath.Length > 500) return BadRequest("Folder path exceeds maximum length of 500 characters.");
+            Directory.CreateDirectory(newFolderPath);
 
-            // 7) Create directory on disk
-            try
-            {
-                Directory.CreateDirectory(newFolderPath);
-            }
-            catch (Exception)
-            {
-                return StatusCode(500, "Failed to create folder on disk.");
-            }
-
-            // 8) Insert into DB (use your schema fields)
             var folder = new Folder
             {
                 UserID = userId,
@@ -124,7 +84,6 @@ namespace Drop1.Api.Controllers
             _context.Folders.Add(folder);
             await _context.SaveChangesAsync();
 
-            // 9) Return result
             return Ok(new
             {
                 message = "Folder created successfully",
@@ -136,61 +95,43 @@ namespace Drop1.Api.Controllers
             });
         }
 
-
-
-
-
-
-
+        // =========================
+        // UPLOAD FOLDER API
+        // =========================
         [HttpPost("upload-folder")]
-        public async Task<IActionResult> UploadFolder(List<IFormFile> files, int? parentFolderId = null)
+        public async Task<IActionResult> UploadFolder([FromForm] List<IFormFile> files, int? parentFolderId = null)
         {
-            // ---------- 1) Auth ----------
             var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? HttpContext.Session.GetString("UserID");
-            if (string.IsNullOrEmpty(userIdStr))
-                return Unauthorized();
-
+            if (string.IsNullOrEmpty(userIdStr)) return Unauthorized();
             int userId = int.Parse(userIdStr);
 
-            // ---------- 2) Accept files ----------
             var uploadedFiles = (files != null && files.Count > 0) ? files : Request.Form.Files.ToList();
-            if (uploadedFiles == null || uploadedFiles.Count == 0)
-                return BadRequest("No folder uploaded.");
+            if (uploadedFiles == null || uploadedFiles.Count == 0) return BadRequest("No folder uploaded.");
 
             if (uploadedFiles.Count == 1)
             {
                 var onlyName = uploadedFiles[0].FileName ?? "";
-                if (!onlyName.Contains("/") && !onlyName.Contains("\\"))
-                    return BadRequest("Only folders can be uploaded. Please select a folder (not a single file).");
+                if (!onlyName.Contains("/") && !onlyName.Contains("\\")) return BadRequest("Only folders can be uploaded. Please select a folder (not a single file).");
             }
 
-            // ---------- 3) Ensure root path ----------
-            var userRootPath = Path.Combine("C:\\Drop1", userId.ToString());
-            if (!Directory.Exists(userRootPath))
-                Directory.CreateDirectory(userRootPath);
+            var userRootPath = Path.Combine(_basePath, userId.ToString());
+            if (!Directory.Exists(userRootPath)) Directory.CreateDirectory(userRootPath);
 
             string parentPath = userRootPath;
             if (parentFolderId != null)
             {
-                var parentFolder = await _context.Folders
-                    .FirstOrDefaultAsync(f => f.FolderID == parentFolderId && f.UserID == userId);
-                if (parentFolder == null)
-                    return BadRequest("Parent folder not found.");
+                var parentFolder = await _context.Folders.FirstOrDefaultAsync(f => f.FolderID == parentFolderId && f.UserID == userId);
+                if (parentFolder == null) return BadRequest("Parent folder not found.");
                 parentPath = parentFolder.FolderPath;
             }
 
-            // ---------- 4) Get user storage info ----------
             var user = await _context.Users.FirstOrDefaultAsync(u => u.UserID == userId);
-            if (user == null)
-                return BadRequest("User not found.");
+            if (user == null) return BadRequest("User not found.");
 
             decimal totalStorageMb = user.TotalStorageMB;
             decimal usedMb = user.UsedStorageMB;
-
-            // ---------- 5) Quota check ----------
             decimal uploadMb = uploadedFiles.Sum(f => Math.Round((decimal)f.Length / (1024 * 1024), 4));
-            if (usedMb + uploadMb > totalStorageMb)
-                return BadRequest($"Uploading exceeds your {totalStorageMb} MB storage limit.");
+            if (usedMb + uploadMb > totalStorageMb) return BadRequest($"Uploading exceeds your {totalStorageMb} MB storage limit.");
 
             bool anyHasPath = uploadedFiles.Any(f => (f.FileName ?? "").Contains("/") || (f.FileName ?? "").Contains("\\"));
 
@@ -219,13 +160,11 @@ namespace Drop1.Api.Controllers
                 await _context.SaveChangesAsync();
                 createdRootFolderId = newRoot.FolderID;
 
-                if (!Directory.Exists(createdRootFolderPath))
-                    Directory.CreateDirectory(createdRootFolderPath);
+                if (!Directory.Exists(createdRootFolderPath)) Directory.CreateDirectory(createdRootFolderPath);
             }
 
             decimal totalAddedMb = 0m;
 
-            // ---------- 6) Process files ----------
             foreach (var file in uploadedFiles)
             {
                 if (file.Length <= 0) continue;
@@ -233,12 +172,10 @@ namespace Drop1.Api.Controllers
                 var raw = file.FileName ?? "";
                 var relative = raw.Replace("/", Path.DirectorySeparatorChar.ToString())
                                   .Replace("\\", Path.DirectorySeparatorChar.ToString());
-
                 var parts = relative.Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries);
 
                 string currentPath = parentPath;
                 int? currentParentId = parentFolderId;
-
                 if (!anyHasPath && uploadedFiles.Count > 1)
                 {
                     currentParentId = createdRootFolderId;
@@ -267,9 +204,7 @@ namespace Drop1.Api.Controllers
                     }
 
                     currentParentId = folderEntity.FolderID;
-
-                    if (!Directory.Exists(currentPath))
-                        Directory.CreateDirectory(currentPath);
+                    if (!Directory.Exists(currentPath)) Directory.CreateDirectory(currentPath);
                 }
 
                 var fileName = parts.Last();
@@ -279,39 +214,11 @@ namespace Drop1.Api.Controllers
                 using (var stream = new FileStream(destPath, FileMode.Create))
                     await file.CopyToAsync(stream);
 
-                if (currentParentId == null)
-                {
-                    if (parentFolderId != null)
-                        currentParentId = parentFolderId;
-                    else
-                    {
-                        var userRootFolderName = Path.GetFileName(userRootPath) ?? userId.ToString();
-                        var userRootFolder = await _context.Folders
-                            .FirstOrDefaultAsync(f => f.FolderName == userRootFolderName && f.ParentFolderID == null && f.UserID == userId);
-
-                        if (userRootFolder == null)
-                        {
-                            userRootFolder = new Folder
-                            {
-                                FolderName = userRootFolderName,
-                                ParentFolderID = null,
-                                UserID = userId,
-                                FolderPath = userRootPath
-                            };
-                            _context.Folders.Add(userRootFolder);
-                            await _context.SaveChangesAsync();
-                        }
-                        currentParentId = userRootFolder.FolderID;
-                    }
-                }
-
                 decimal fileSizeMb = Math.Round((decimal)file.Length / (1024 * 1024), 4);
                 totalAddedMb += fileSizeMb;
 
                 string fileType = Path.GetExtension(fileName);
-                fileType = string.IsNullOrWhiteSpace(fileType)
-                    ? (file.ContentType ?? "")
-                    : fileType.TrimStart('.').ToLowerInvariant();
+                fileType = string.IsNullOrWhiteSpace(fileType) ? (file.ContentType ?? "") : fileType.TrimStart('.').ToLowerInvariant();
 
                 var dbFile = new FileItem
                 {
@@ -328,12 +235,88 @@ namespace Drop1.Api.Controllers
                 await _context.SaveChangesAsync();
             }
 
-            // ---------- 7) Update UsedStorageMB ----------
             user.UsedStorageMB += totalAddedMb;
             _context.Users.Update(user);
             await _context.SaveChangesAsync();
 
             return Ok("Folder uploaded successfully with hierarchy.");
         }
+
+        // =========================
+        // DOWNLOAD FOLDER API
+        // =========================
+        [HttpGet("download/{folderId}")]
+        public async Task<IActionResult> DownloadFolder(int folderId)
+        {
+            var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? HttpContext.Session.GetString("UserID");
+            if (string.IsNullOrEmpty(userIdStr)) return Unauthorized();
+            int userId = int.Parse(userIdStr);
+
+            var folder = await _context.Folders.FirstOrDefaultAsync(f => f.FolderID == folderId && f.UserID == userId && !f.IsDeleted);
+            if (folder == null) return NotFound("Folder not found.");
+            if (!Directory.Exists(folder.FolderPath)) return NotFound("Folder path does not exist on disk.");
+
+            var zipFileName = $"{folder.FolderName}.zip";
+            var zipPath = Path.Combine(Path.GetTempPath(), zipFileName);
+
+            if (System.IO.File.Exists(zipPath)) System.IO.File.Delete(zipPath);
+
+            ZipFile.CreateFromDirectory(folder.FolderPath, zipPath);
+
+            var zipBytes = await System.IO.File.ReadAllBytesAsync(zipPath);
+            return File(zipBytes, "application/zip", zipFileName);
+        }
+
+        // =========================
+        // GET FOLDER DETAILS API (Google Drive style)
+        // =========================
+        [HttpGet("details/{folderId}")]
+        public async Task<IActionResult> GetFolderDetails(int folderId)
+        {
+            var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? HttpContext.Session.GetString("UserID");
+            if (string.IsNullOrEmpty(userIdStr)) return Unauthorized();
+            int userId = int.Parse(userIdStr);
+
+            var folder = await _context.Folders
+                .FirstOrDefaultAsync(f => f.FolderID == folderId && f.UserID == userId && !f.IsDeleted);
+
+            if (folder == null) return NotFound("Folder not found.");
+
+            // ✅ Subfolders
+            var subfolders = await _context.Folders
+                .Where(f => f.ParentFolderID == folderId && f.UserID == userId && !f.IsDeleted)
+                .Select(f => new
+                {
+                    f.FolderName,
+                    f.CreatedAt
+                })
+                .ToListAsync();
+
+            // ✅ Files
+            var files = await _context.Files
+                .Where(f => f.FolderID == folderId && f.UserID == userId && !f.IsDeleted)
+                .Select(f => new
+                {
+                    f.FileName,
+                    f.FileSizeMB,
+                    f.FileType,
+                    f.UploadedAt
+                })
+                .ToListAsync();
+
+            // ✅ Calculate folder size
+            var totalSizeMB = files.Sum(f => f.FileSizeMB);
+
+            return Ok(new
+            {
+                FolderName = folder.FolderName,
+                CreatedAt = folder.CreatedAt,
+                TotalFiles = files.Count,
+                TotalSizeMB = Math.Round(totalSizeMB, 2),
+                Subfolders = subfolders,
+                Files = files
+            });
+        }
+
     }
 }

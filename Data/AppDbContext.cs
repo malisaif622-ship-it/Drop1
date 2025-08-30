@@ -1,6 +1,7 @@
 ﻿using Drop1.Models;
 using Drop1.Api.Models;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Design;
 using System.Collections.Generic;
 using System.Reflection.Emit;
 

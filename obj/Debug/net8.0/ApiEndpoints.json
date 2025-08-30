@@ -22,6 +22,38 @@
   },
   {
     "ContainingType": "Drop1.Api.Controllers.FolderController",
+    "Method": "GetFolderDetails",
+    "RelativePath": "api/Folder/details/{folderId}",
+    "HttpMethod": "GET",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "folderId",
+        "Type": "System.Int32",
+        "IsRequired": true
+      }
+    ],
+    "ReturnTypes": []
+  },
+  {
+    "ContainingType": "Drop1.Api.Controllers.FolderController",
+    "Method": "DownloadFolder",
+    "RelativePath": "api/Folder/download/{folderId}",
+    "HttpMethod": "GET",
+    "IsController": true,
+    "Order": 0,
+    "Parameters": [
+      {
+        "Name": "folderId",
+        "Type": "System.Int32",
+        "IsRequired": true
+      }
+    ],
+    "ReturnTypes": []
+  },
+  {
+    "ContainingType": "Drop1.Api.Controllers.FolderController",
     "Method": "UploadFolder",
     "RelativePath": "api/Folder/upload-folder",
     "HttpMethod": "POST",

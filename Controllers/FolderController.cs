@@ -447,16 +447,9 @@ namespace Drop1.Api.Controllers
                 return StatusCode(500, "Error creating recycle bin directory.");
             }
 
-            // ✅ 4) Ensure unique name in RecycleBin
+            // ✅ 5) Move physically
             string folderName = Path.GetFileName(folderPath);
             string destinationPath = Path.Combine(recycleBinPath, folderName);
-            int counter = 2;
-            while (Directory.Exists(destinationPath))
-            {
-                destinationPath = Path.Combine(recycleBinPath, $"{folderName} ({counter++})");
-            }
-
-            // ✅ 5) Move physically
             try
             {
                 Directory.Move(folderPath, destinationPath);

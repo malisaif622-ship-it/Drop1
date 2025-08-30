@@ -30,6 +30,9 @@ namespace Drop1.Api.Controllers
             _hostingEnvironment = hostingEnvironment;
         }
 
+        // =========================
+        // CREATE FOLDER API
+        // =========================
         [HttpPost("create")]
         public async Task<IActionResult> CreateFolder([FromQuery] string folderName, [FromQuery] int? parentFolderId)
         {
@@ -142,12 +145,9 @@ namespace Drop1.Api.Controllers
             });
         }
 
-
-
-
-
-
-
+        // =========================
+        // UPLOAD FOLDER API
+        // =========================
         [HttpPost("upload-folder")]
         public async Task<IActionResult> UploadFolder(List<IFormFile> files, int? parentFolderId = null)
         {
@@ -335,12 +335,9 @@ namespace Drop1.Api.Controllers
             return Ok("Folder uploaded successfully with hierarchy.");
         }
 
-
-
-
-
-
-
+        // =========================
+        // RENAME FOLDER API
+        // =========================
         [HttpPut("rename")]
         public async Task<IActionResult> RenameFolder(int folderId, string newName)
         {
@@ -414,12 +411,9 @@ namespace Drop1.Api.Controllers
             return Ok(new { message = "Folder renamed successfully", newName = finalName });
         }
 
-
-
-
-
-
-
+        // =========================
+        // DELETE FOLDER API
+        // =========================
         [HttpDelete("delete")]
         public async Task<IActionResult> DeleteFolder(int folderId)
         {
@@ -505,12 +499,9 @@ namespace Drop1.Api.Controllers
             return Ok(new { message = "Folder moved to recycle bin successfully." });
         }
 
-
-
-
-
-
-
+        // =========================
+        // RECOVER FOLDER API
+        // =========================
         [HttpPut("recover/{folderId}")]
         public async Task<IActionResult> RecoverFolder(int folderId)
         {
@@ -653,6 +644,82 @@ namespace Drop1.Api.Controllers
             await _context.SaveChangesAsync();
 
             return Ok(new { message = $"Folder restored successfully as '{finalFolderName}'." });
+        }
+
+        // =========================
+        // DOWNLOAD FOLDER API
+        // =========================
+        [HttpGet("download/{folderId}")]
+        public async Task<IActionResult> DownloadFolder(int folderId)
+        {
+            var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? HttpContext.Session.GetString("UserID");
+            if (string.IsNullOrEmpty(userIdStr)) return Unauthorized();
+            int userId = int.Parse(userIdStr);
+
+            var folder = await _context.Folders.FirstOrDefaultAsync(f => f.FolderID == folderId && f.UserID == userId && !f.IsDeleted);
+            if (folder == null) return NotFound("Folder not found.");
+            if (!Directory.Exists(folder.FolderPath)) return NotFound("Folder path does not exist on disk.");
+
+            var zipFileName = $"{folder.FolderName}.zip";
+            var zipPath = Path.Combine(Path.GetTempPath(), zipFileName);
+
+            if (System.IO.File.Exists(zipPath)) System.IO.File.Delete(zipPath);
+
+            ZipFile.CreateFromDirectory(folder.FolderPath, zipPath);
+
+            var zipBytes = await System.IO.File.ReadAllBytesAsync(zipPath);
+            return File(zipBytes, "application/zip", zipFileName);
+        }
+
+        // =========================
+        // GET FOLDER DETAILS API
+        // =========================
+        [HttpGet("details/{folderId}")]
+        public async Task<IActionResult> GetFolderDetails(int folderId)
+        {
+            var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? HttpContext.Session.GetString("UserID");
+            if (string.IsNullOrEmpty(userIdStr)) return Unauthorized();
+            int userId = int.Parse(userIdStr);
+
+            var folder = await _context.Folders
+                .FirstOrDefaultAsync(f => f.FolderID == folderId && f.UserID == userId && !f.IsDeleted);
+
+            if (folder == null) return NotFound("Folder not found.");
+
+            // ✅ Subfolders
+            var subfolders = await _context.Folders
+                .Where(f => f.ParentFolderID == folderId && f.UserID == userId && !f.IsDeleted)
+                .Select(f => new
+                {
+                    f.FolderName,
+                    f.CreatedAt
+                })
+                .ToListAsync();
+
+            // ✅ Files
+            var files = await _context.Files
+                .Where(f => f.FolderID == folderId && f.UserID == userId && !f.IsDeleted)
+                .Select(f => new
+                {
+                    f.FileName,
+                    f.FileSizeMB,
+                    f.FileType,
+                    f.UploadedAt
+                })
+                .ToListAsync();
+
+            // ✅ Calculate folder size
+            var totalSizeMB = files.Sum(f => f.FileSizeMB);
+
+            return Ok(new
+            {
+                FolderName = folder.FolderName,
+                CreatedAt = folder.CreatedAt,
+                TotalFiles = files.Count,
+                TotalSizeMB = Math.Round(totalSizeMB, 2),
+                Subfolders = subfolders,
+                Files = files
+            });
         }
     }
 }

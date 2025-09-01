@@ -12,138 +12,13 @@ namespace Drop1.Controllers
     public class FileController : ControllerBase
     {
         private readonly AppDbContext _context;
-        private readonly string _basePath = @"C:\Drop1\";  // Storage root
+        private readonly string _basePath = @"C:\Drop1data\";  // Storage root
         private readonly IWebHostEnvironment _hostingEnvironment;
 
         public FileController(AppDbContext context, IWebHostEnvironment hostingEnvironment)
         {
             _context = context;
             _hostingEnvironment = hostingEnvironment;
-        }
-
-        // =========================
-        // CREATE FILE API
-        // =========================
-        [HttpPost("create-file")]
-        public async Task<IActionResult> CreateFile([FromQuery] string fileName, [FromQuery] int? parentFolderId)
-        {
-            var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? HttpContext.Session.GetString("UserID");
-            if (string.IsNullOrEmpty(userIdStr))
-                return Unauthorized();
-
-            int userId = int.Parse(userIdStr);
-
-            // 1) Validate input
-            if (string.IsNullOrWhiteSpace(fileName))
-                return BadRequest("File name cannot be empty.");
-
-            fileName = fileName.Trim();
-
-            // 2) Ensure user exists
-            var user = await _context.Users.FirstOrDefaultAsync(u => u.UserID == userId);
-            if (user == null) return NotFound("User not found.");
-
-            // 3) Ensure user root exists
-            var userRoot = Path.Combine(_basePath, userId.ToString());
-            try
-            {
-                Directory.CreateDirectory(userRoot);
-            }
-            catch
-            {
-                return StatusCode(500, "Server error creating user storage directory.");
-            }
-
-            // 4) Resolve parent folder path
-            string parentPath = userRoot;
-            if (parentFolderId.HasValue)
-            {
-                var parentFolder = await _context.Folders.FirstOrDefaultAsync(f =>
-                    f.FolderID == parentFolderId.Value && f.UserID == userId && !f.IsDeleted);
-
-                if (parentFolder == null)
-                    return NotFound("Parent folder not found.");
-
-                parentPath = string.IsNullOrWhiteSpace(parentFolder.FolderPath) ? userRoot : parentFolder.FolderPath;
-            }
-
-            // Security check: ensure parentPath stays inside userRoot
-            try
-            {
-                var normalizedParent = Path.GetFullPath(parentPath);
-                var normalizedUserRoot = Path.GetFullPath(userRoot);
-                if (!normalizedParent.StartsWith(normalizedUserRoot, StringComparison.OrdinalIgnoreCase))
-                    return BadRequest("Invalid parent folder location.");
-            }
-            catch
-            {
-                return BadRequest("Invalid parent folder path.");
-            }
-
-            // 5) Extract extension
-            string nameWithoutExt = Path.GetFileNameWithoutExtension(fileName);
-            string ext = Path.GetExtension(fileName);
-            if (string.IsNullOrEmpty(ext))
-                ext = ".txt"; // default extension
-
-            // 6) Ensure uniqueness among siblings
-            var siblingFiles = await _context.Files
-                .Where(f => f.UserID == userId && f.FolderID == parentFolderId && !f.IsDeleted)
-                .Select(f => f.FileName + f.FileType)
-                .ToListAsync();
-
-            string candidateName = nameWithoutExt;
-            string candidateExt = ext;
-            string newFilePath = Path.Combine(parentPath, candidateName + candidateExt);
-
-            int counter = 2;
-            while (siblingFiles.Any(s => string.Equals(s, candidateName + candidateExt, StringComparison.OrdinalIgnoreCase))
-                   || System.IO.File.Exists(newFilePath))
-            {
-                candidateName = $"{nameWithoutExt} ({counter})";
-                newFilePath = Path.Combine(parentPath, candidateName + candidateExt);
-                counter++;
-            }
-
-            if (newFilePath.Length > 500)
-                return BadRequest("File path exceeds maximum length of 500 characters.");
-
-            // 7) Create physical file
-            try
-            {
-                using (var fs = System.IO.File.Create(newFilePath)) { }
-            }
-            catch
-            {
-                return StatusCode(500, "Failed to create file on disk.");
-            }
-
-            // 8) Insert into DB
-            var file = new Api.Models.FileItem
-            {
-                UserID = userId,
-                FileName = candidateName,
-                FileType = candidateExt,
-                FilePath = newFilePath,
-                FolderID = parentFolderId,
-                UploadedAt = DateTime.UtcNow,
-                IsDeleted = false
-            };
-
-            _context.Files.Add(file);
-            await _context.SaveChangesAsync();
-
-            // 9) Return result
-            return Ok(new
-            {
-                message = "File created successfully",
-                fileId = file.FileID,
-                fileName = file.FileName,
-                fileType = file.FileType,
-                filePath = file.FilePath,
-                folderId = file.FolderID,
-                createdAt = file.UploadedAt
-            });
         }
 
         // =========================
@@ -268,63 +143,133 @@ namespace Drop1.Controllers
         // =========================
         // RENAME FILE API
         // =========================
-        [HttpPut("rename-file")]
-        public async Task<IActionResult> RenameFile(int fileId, string newName)
+        [HttpPut("rename/{fileId}")]
+        public async Task<IActionResult> RenameFile(int fileId, [FromQuery] string newName)
         {
-            var userId = HttpContext.Session.GetString("UserID");
-            if (userId == null)
-                return Unauthorized("User not logged in.");
+            var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier)
+                            ?? HttpContext.Session.GetString("UserID");
+            if (string.IsNullOrEmpty(userIdStr))
+                return Unauthorized();
 
-            // ✅ 1) Get file from DB
+            if (string.IsNullOrWhiteSpace(newName))
+                return BadRequest("File name cannot be empty.");
+
+            int userId = int.Parse(userIdStr);
+
+            // Load file & verify ownership
             var file = await _context.Files
-                .FirstOrDefaultAsync(f => f.FileID == fileId && f.UserID.ToString() == userId && !f.IsDeleted);
+                .FirstOrDefaultAsync(f => f.FileID == fileId && f.UserID == userId && !f.IsDeleted);
             if (file == null)
                 return NotFound("File not found.");
 
-            // ✅ 2) Extract extension (type) & base name
-            string extension = Path.GetExtension(file.FileName); // e.g. ".txt"
-            string baseName = Path.GetFileNameWithoutExtension(newName);
+            // --- determine original extension and normalized filetype (no leading dot) ---
+            string originalExt = Path.GetExtension(file.FileName) ?? string.Empty; // ".jpg" or ""
+            string normalizedFileType = (file.FileType ?? "").Trim();
+            if (string.IsNullOrEmpty(normalizedFileType) && !string.IsNullOrEmpty(originalExt))
+                normalizedFileType = originalExt.TrimStart('.');
+            normalizedFileType = normalizedFileType.TrimStart('.'); // ensure no leading dot
 
-            // keep the filetype from DB (not just extension string)
-            string? fileType = file.FileType;
+            // --- create base name from newName (ignore any extension supplied) ---
+            string baseName = Path.GetFileNameWithoutExtension(newName).Trim();
+            if (string.IsNullOrWhiteSpace(baseName))
+                return BadRequest("Invalid new name.");
 
-            string finalName = $"{baseName}{extension}";
+            // build finalName using originalExt if available, otherwise fileType if available
+            string extToUse = !string.IsNullOrEmpty(originalExt) ? originalExt
+                              : (!string.IsNullOrEmpty(normalizedFileType) ? "." + normalizedFileType : "");
+            string finalName = baseName + extToUse;
 
-            // ✅ 3) Ensure uniqueness only if same name + same type exists
-            int counter = 2;
-            while (await _context.Files.AnyAsync(f =>
-                f.UserID.ToString() == userId &&
+            // --- ensure uniqueness (case-insensitive) in same folder using EF-translatable checks ---
+            string finalNameLower = finalName.ToLower();
+            bool exists = await _context.Files.AnyAsync(f =>
+                f.UserID == userId &&
                 f.FileID != fileId &&
-                f.FolderID == file.FolderID && // same folder
-                f.FileType == fileType && // same type
-                f.FileName == finalName)) // same name
+                f.FolderID == file.FolderID &&
+                !f.IsDeleted &&
+                f.FileName.ToLower() == finalNameLower);
+
+            int counter = 2;
+            while (exists)
             {
-                finalName = $"{baseName} ({counter++}){extension}";
+                finalName = $"{baseName} ({counter++}){extToUse}";
+                finalNameLower = finalName.ToLower();
+                exists = await _context.Files.AnyAsync(f =>
+                    f.UserID == userId &&
+                    f.FileID != fileId &&
+                    f.FolderID == file.FolderID &&
+                    !f.IsDeleted &&
+                    f.FileName.ToLower() == finalNameLower);
             }
 
-            // ✅ 4) Compute new file path
-            string? parentPath = Path.GetDirectoryName(file.FilePath);
-            string newFilePath = Path.Combine(parentPath ?? "", finalName);
+            // --- prepare new DB file path (same folder) ---
+            string parentPath = Path.GetDirectoryName(file.FilePath) ?? "";
+            string newFilePath = Path.Combine(parentPath, finalName);
 
-            // ✅ 5) Physical paths
-            var rootPath = Path.Combine(_hostingEnvironment.ContentRootPath, "UserData", userId);
-            var oldPhysicalPath = Path.Combine(rootPath, file.FilePath);
-            var newPhysicalPath = Path.Combine(rootPath, newFilePath);
+            // --- resolve physical paths (support absolute and relative stored paths) ---
+            var rootPath = Path.Combine(_hostingEnvironment.ContentRootPath, "UserData", userIdStr);
+            string oldPhysicalPath = Path.IsPathRooted(file.FilePath)
+                ? file.FilePath
+                : Path.Combine(rootPath, file.FilePath.TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+            string newPhysicalPath = Path.IsPathRooted(newFilePath)
+                ? newFilePath
+                : Path.Combine(rootPath, newFilePath.TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
 
-            // ✅ 6) Rename physically
-            if (System.IO.File.Exists(oldPhysicalPath))
+            try
             {
+                if (!System.IO.File.Exists(oldPhysicalPath))
+                    return NotFound("Physical file not found on disk.");
+
+                // ensure target folder exists
+                Directory.CreateDirectory(Path.GetDirectoryName(newPhysicalPath)!);
+
+                // If target file already exists on disk (rare, but possible), pick a unique fs name
+                if (System.IO.File.Exists(newPhysicalPath))
+                {
+                    int fsCounter = 2;
+                    string fsCandidate;
+                    string fsCandidatePath;
+                    var baseCandidate = baseName;
+                    do
+                    {
+                        fsCandidate = $"{baseCandidate} ({fsCounter++})";
+                        fsCandidatePath = Path.Combine(Path.GetDirectoryName(newPhysicalPath)!, fsCandidate);
+                    } while (System.IO.File.Exists(fsCandidatePath));
+
+                    finalName = fsCandidate;
+                    newFilePath = Path.Combine(parentPath, finalName);
+                    newPhysicalPath = Path.IsPathRooted(newFilePath)
+                        ? newFilePath
+                        : Path.Combine(rootPath, newFilePath.TrimStart(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+                }
+
+                // Move file on disk
                 System.IO.File.Move(oldPhysicalPath, newPhysicalPath);
             }
+            catch (Exception ex)
+            {
+                return StatusCode(500, $"Failed to rename file on disk: {ex.Message}");
+            }
 
-            // ✅ 7) Update DB
+            // --- update DB: FileName, FilePath, normalize FileType (store without leading dot) ---
             file.FileName = finalName;
             file.FilePath = newFilePath;
+            file.FileType = normalizedFileType; // normalized: e.g. "jpg" (no dot)
 
             await _context.SaveChangesAsync();
 
-            return Ok(new { message = "File renamed successfully", newName = finalName });
+            return Ok(new
+            {
+                message = "File renamed successfully",
+                fileId = file.FileID,
+                newName = file.FileName,
+                newPath = file.FilePath,
+                fileType = file.FileType
+            });
         }
+
+
+
+
 
         // =========================
         // DELETE FILE API
@@ -468,9 +413,6 @@ namespace Drop1.Controllers
 
             // 7) Update DB: restore and adjust path
             file.IsDeleted = false;
-            file.FilePath = targetFilePath;
-            file.FileName = finalFileName;
-            file.FileType = extension;
 
             await _context.SaveChangesAsync();
 

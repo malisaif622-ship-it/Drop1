@@ -62,7 +62,7 @@ namespace Drop1.Api.Controllers
                 {
                     f.FileName,
                     f.FileSizeMB,
-                    f.FileType,s
+                    f.FileType,
                     f.UploadedAt
                 })
                 .ToList();

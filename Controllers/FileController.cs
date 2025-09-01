@@ -12,7 +12,7 @@ namespace Drop1.Controllers
     public class FileController : ControllerBase
     {
         private readonly AppDbContext _context;
-        private readonly string _basePath = @"C:\Drop1data\";  // Storage root
+        private readonly string _basePath = @"C:\Drop1\";  // Storage root
         private readonly IWebHostEnvironment _hostingEnvironment;
 
         public FileController(AppDbContext context, IWebHostEnvironment hostingEnvironment)
@@ -283,7 +283,7 @@ namespace Drop1.Controllers
 
             int userId = int.Parse(userIdStr);
 
-            // ✅ 1) Get the file to delete
+            // 1) Get the file record
             var file = await _context.Files
                 .FirstOrDefaultAsync(f => f.FileID == fileId && f.UserID == userId && !f.IsDeleted);
 
@@ -292,11 +292,10 @@ namespace Drop1.Controllers
 
             string filePath = file.FilePath;
 
-            // ✅ 2) User root
+            // 2) Build user recycle bin path
             var userRoot = Path.Combine(_basePath, userId.ToString());
-
-            // ✅ 3) RecycleBin inside user's root
             var recycleBinPath = Path.Combine(userRoot, "RecycleBin");
+
             try
             {
                 if (!Directory.Exists(recycleBinPath))
@@ -307,10 +306,21 @@ namespace Drop1.Controllers
                 return StatusCode(500, "Error creating recycle bin directory.");
             }
 
+            // 3) Physically move file into recycle bin
             string fileName = Path.GetFileName(filePath);
             string destinationPath = Path.Combine(recycleBinPath, fileName);
+
             try
             {
+                // Handle duplicate file names in recycle bin
+                int counter = 1;
+                while (System.IO.File.Exists(destinationPath))
+                {
+                    string baseName = Path.GetFileNameWithoutExtension(fileName);
+                    string ext = Path.GetExtension(fileName);
+                    destinationPath = Path.Combine(recycleBinPath, $"{baseName}({counter++}){ext}");
+                }
+
                 System.IO.File.Move(filePath, destinationPath);
             }
             catch
@@ -318,7 +328,7 @@ namespace Drop1.Controllers
                 return StatusCode(500, "Error moving file to recycle bin.");
             }
 
-            // ✅ 6) Mark only this file as deleted
+            // 4) Mark as deleted in DB (path unchanged)
             file.IsDeleted = true;
 
             await _context.SaveChangesAsync();
@@ -332,91 +342,74 @@ namespace Drop1.Controllers
         [HttpPut("recover-file/{fileId}")]
         public async Task<IActionResult> RecoverFile(int fileId)
         {
-            // 0) Auth
             var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? HttpContext.Session.GetString("UserID");
             if (string.IsNullOrEmpty(userIdStr))
                 return Unauthorized();
 
             int userId = int.Parse(userIdStr);
 
-            // 1) Load target file (must be deleted)
+            // 1) Find deleted file record
             var file = await _context.Files
                 .FirstOrDefaultAsync(f => f.FileID == fileId && f.UserID == userId && f.IsDeleted);
 
             if (file == null)
                 return NotFound("Deleted file not found.");
 
-            string originalFilePath = file.FilePath;
-            string fileName = Path.GetFileNameWithoutExtension(originalFilePath);
-            string extension = Path.GetExtension(originalFilePath);
-            string originalFolder = Path.GetDirectoryName(originalFilePath)!;
+            // From DB
+            string baseName = file.FileName;  // without extension
+            string extension = string.IsNullOrEmpty(file.FileType) ? "" : "." + file.FileType;
 
-            // 2) Build user root + RecycleBin path
+            // 2) RecycleBin path
             var userRoot = Path.Combine(_basePath, userId.ToString());
             var recycleBinPath = Path.Combine(userRoot, "RecycleBin");
 
             if (!Directory.Exists(recycleBinPath))
                 return NotFound("Recycle Bin not found for this user.");
 
-            // 3) Locate file in RecycleBin
-            string? recycleCurrentPath = null;
-            var exactCandidate = Path.Combine(recycleBinPath, file.FileName + file.FileType);
-            if (System.IO.File.Exists(exactCandidate))
-            {
-                recycleCurrentPath = exactCandidate;
-            }
-            else
-            {
-                var candidates = Directory.GetFiles(recycleBinPath, file.FileName + "*" + file.FileType, SearchOption.TopDirectoryOnly)
-                    .OrderByDescending(f => System.IO.File.GetLastWriteTime(f))
-                    .ToList();
-
-                recycleCurrentPath = candidates.FirstOrDefault();
-            }
+            // 3) Look inside recycle bin for a match
+            string? recycleCurrentPath = Directory.GetFiles(recycleBinPath, $"{baseName}*{extension}", SearchOption.TopDirectoryOnly)
+                .OrderByDescending(f => System.IO.File.GetLastWriteTime(f))
+                .FirstOrDefault();
 
             if (string.IsNullOrEmpty(recycleCurrentPath) || !System.IO.File.Exists(recycleCurrentPath))
-                return NotFound("File not found inside Recycle Bin.");
+                return NotFound($"File '{baseName}{extension}' not found inside Recycle Bin.");
 
-            // 4) Ensure original folder exists
+            // 4) Original folder (from stored path in DB)
+            string originalFolder = Path.GetDirectoryName(file.FilePath)!;
             if (!Directory.Exists(originalFolder))
                 Directory.CreateDirectory(originalFolder);
 
-            // 5) Resolve name conflict (same FileName + FileType in same folder)
-            string targetFilePath = originalFilePath;
-            string baseName = fileName;
+            // 5) Resolve conflicts
+            string targetFilePath = file.FilePath; // original location
             int counter = 2;
-
             while (System.IO.File.Exists(targetFilePath) ||
                    await _context.Files.AnyAsync(f =>
                        f.UserID == userId &&
                        !f.IsDeleted &&
                        f.FolderID == file.FolderID &&
                        f.FileName == Path.GetFileNameWithoutExtension(targetFilePath) &&
-                       f.FileType == extension))
+                       f.FileType == file.FileType))
             {
-                string newName = $"{baseName} ({counter})";
+                string newName = $"{baseName} ({counter++})";
                 targetFilePath = Path.Combine(originalFolder, newName + extension);
-                counter++;
             }
 
-            string finalFileName = Path.GetFileNameWithoutExtension(targetFilePath);
-
-            // 6) Move file from RecycleBin back
+            // 6) Move back physically
             try
             {
                 System.IO.File.Move(recycleCurrentPath, targetFilePath);
             }
-            catch
+            catch (Exception ex)
             {
-                return StatusCode(500, "Failed to move file back from Recycle Bin.");
+                return StatusCode(500, $"Failed to move file back from Recycle Bin. {ex.Message}");
             }
 
-            // 7) Update DB: restore and adjust path
+            // 7) Update DB (just clear IsDeleted)
             file.IsDeleted = false;
 
             await _context.SaveChangesAsync();
 
-            return Ok(new { message = $"File restored successfully as '{finalFileName}{extension}'." });
+            return Ok(new { message = $"File restored successfully as '{Path.GetFileName(targetFilePath)}'." });
         }
 
         // =========================
@@ -465,7 +458,7 @@ namespace Drop1.Controllers
             {
                 FileName = file.FileName,
                 FileType = file.FileType,
-                FileSizeMB = Math.Round(file.FileSizeMB, 2),
+                FileSizeMB = file.FileSizeMB,
                 UploadedAt = file.UploadedAt
             });
         }

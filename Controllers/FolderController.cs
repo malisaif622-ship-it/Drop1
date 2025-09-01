@@ -159,8 +159,8 @@ namespace Drop1.Api.Controllers
             int userId = int.Parse(userIdStr);
 
             // ---------- 2) Accept files ----------
-            var uploadedFiles = (files != null && files.Count > 0) ? files : Request.Form.Files.ToList();
-            if (uploadedFiles == null || uploadedFiles.Count == 0)
+            var uploadedFiles = (files != null && files.Count > 1) ? files : Request.Form.Files.ToList();
+            if (uploadedFiles == null || uploadedFiles.Count == 1)
                 return BadRequest("No folder uploaded.");
 
             // ---------- 3) Ensure root path ----------
@@ -244,6 +244,7 @@ namespace Drop1.Api.Controllers
                     currentPath = createdRootFolderPath;
                 }
 
+                // ensure folder structure
                 for (int i = 0; i < parts.Length - 1; i++)
                 {
                     var folderName = parts[i];
@@ -271,6 +272,7 @@ namespace Drop1.Api.Controllers
                         Directory.CreateDirectory(currentPath);
                 }
 
+                // physical file name (with extension)
                 var fileName = parts.Last();
                 var destPath = Path.Combine(currentPath, fileName);
                 Directory.CreateDirectory(Path.GetDirectoryName(destPath)!);
@@ -304,6 +306,9 @@ namespace Drop1.Api.Controllers
                     }
                 }
 
+                // get name without extension for DB
+                var fileNameWithoutExt = Path.GetFileNameWithoutExtension(fileName);
+
                 decimal fileSizeMb = Math.Round((decimal)file.Length / (1024 * 1024), 4);
                 totalAddedMb += fileSizeMb;
 
@@ -314,12 +319,12 @@ namespace Drop1.Api.Controllers
 
                 var dbFile = new FileItem
                 {
-                    FileName = fileName,
+                    FileName = fileNameWithoutExt,   // ✅ no extension in DB
                     FileSizeMB = fileSizeMb,
                     FolderID = currentParentId.Value,
                     UserID = userId,
-                    FilePath = destPath,
-                    FileType = fileType,
+                    FilePath = destPath,             // still includes extension physically
+                    FileType = fileType,             // extension/type stored separately
                     UploadedAt = DateTime.UtcNow
                 };
 
@@ -709,9 +714,8 @@ namespace Drop1.Api.Controllers
                 FolderName = folder.FolderName,
                 CreatedAt = folder.CreatedAt,
                 TotalFiles = files.Count,
-                TotalSizeMB = Math.Round(totalSizeMB, 2),
-                Subfolders = subfolders,
-                Files = files
+                TotalFolders = subfolders.Count,
+                TotalSizeMB = totalSizeMB
             });
         }
     }

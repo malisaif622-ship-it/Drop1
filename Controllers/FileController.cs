@@ -159,6 +159,8 @@ namespace Drop1.Controllers
             if (string.IsNullOrEmpty(userIdStr))
                 return Unauthorized();
 
+            int userId = int.Parse(userIdStr);
+
             if (string.IsNullOrWhiteSpace(newName))
                 return BadRequest("File name cannot be empty.");
 
@@ -226,15 +228,14 @@ namespace Drop1.Controllers
             }
             catch (Exception ex)
             {
-                return StatusCode(500, $"Failed to rename file on disk: {ex.Message}");
+                return StatusCode(500, $"Error renaming file: {ex.Message}");
             }
-
+        }
+        
             // ✅ Update DB (FileName = no extension, FilePath = with extension, FileType unchanged)
             file.FileName = finalName;
             file.FilePath = newFilePath;
             file.FileType = normalizedFileType;
-
-            await _context.SaveChangesAsync();
 
             return Ok(new
             {

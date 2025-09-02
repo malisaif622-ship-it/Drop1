@@ -1,6 +1,5 @@
 ﻿using Drop1.Api.Data;
 using Drop1.Api.Models;
-using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Security.Claims;
@@ -14,6 +13,15 @@ namespace Drop1.Controllers
         private readonly AppDbContext _context;
         private readonly string _basePath = @"C:\Drop1\";  // Storage root
         private readonly IWebHostEnvironment _hostingEnvironment;
+
+        // Pakistan Standard Time (UTC+5)
+        private static readonly TimeZoneInfo PakistanTimeZone = TimeZoneInfo.CreateCustomTimeZone(
+            "Pakistan Standard Time", TimeSpan.FromHours(5), "Pakistan Standard Time", "PKT");
+
+        private DateTime GetPakistanTime()
+        {
+            return TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, PakistanTimeZone);
+        }
 
         public FileController(AppDbContext context, IWebHostEnvironment hostingEnvironment)
         {
@@ -124,7 +132,7 @@ namespace Drop1.Controllers
                     FolderID = parentFolderId,
                     UserID = userId,
                     FilePath = destPath,
-                    UploadedAt = DateTime.UtcNow,
+                    UploadedAt = GetPakistanTime(),
                     IsDeleted = false
                 };
 
@@ -156,63 +164,88 @@ namespace Drop1.Controllers
             if (string.IsNullOrWhiteSpace(newName))
                 return BadRequest("File name cannot be empty.");
 
-            var file = await _context.Files.FindAsync(fileId);
+            int userId = int.Parse(userIdStr);
+
+            // ✅ Load file & verify ownership
+            var file = await _context.Files
+                .FirstOrDefaultAsync(f => f.FileID == fileId && f.UserID == userId && !f.IsDeleted);
             if (file == null)
                 return NotFound("File not found.");
 
-            if (file.UserID != userId)
-                return Forbid();
+            // ✅ Normalize extension (from FileType)
+            string normalizedFileType = (file.FileType ?? "").Trim().TrimStart('.');
+            string extension = string.IsNullOrEmpty(normalizedFileType) ? "" : "." + normalizedFileType;
 
-            // Ensure unique file name inside the same folder
-            var exists = await _context.Files
-                .AnyAsync(f => f.UserID == userId
-                            && f.FileID != fileId
-                            && f.FolderID == file.FolderID
-                            && f.FileName.ToLower() == newName.ToLower());
+            // ✅ Ensure newName doesn’t include extension
+            string baseName = Path.GetFileNameWithoutExtension(newName).Trim();
+            if (string.IsNullOrWhiteSpace(baseName))
+                return BadRequest("Invalid new name.");
 
-            if (exists)
-                return Conflict("A file with the same name already exists in this folder.");
+            string finalName = baseName; // DB should not include extension
+            string finalFileNameWithExt = finalName + extension;
 
-            string oldFullPath = file.FilePath;
-            string folderPath = Path.GetDirectoryName(oldFullPath)!;
+            // ✅ Ensure uniqueness (case-insensitive) in same folder
+            string compareNameLower = finalName.ToLower();
+            bool exists = await _context.Files.AnyAsync(f =>
+                f.UserID == userId &&
+                f.FileID != fileId &&
+                f.FolderID == file.FolderID &&
+                !f.IsDeleted &&
+                f.FileName.ToLower() == compareNameLower &&
+                f.FileType.ToLower() == normalizedFileType.ToLower());
 
-            // New file full name with extension
-            string newFileNameWithExt = $"{newName}.{file.FileType}";
-            string newFullPath = Path.Combine(folderPath, newFileNameWithExt);
+            int counter = 2;
+            while (exists)
+            {
+                finalName = $"{baseName} ({counter++})";
+                finalFileNameWithExt = finalName + extension;
+
+                compareNameLower = finalName.ToLower();
+                exists = await _context.Files.AnyAsync(f =>
+                    f.UserID == userId &&
+                    f.FileID != fileId &&
+                    f.FolderID == file.FolderID &&
+                    !f.IsDeleted &&
+                    f.FileName.ToLower() == compareNameLower &&
+                    f.FileType.ToLower() == normalizedFileType.ToLower());
+            }
+
+            // ✅ Build new paths
+            string parentPath = Path.GetDirectoryName(file.FilePath) ?? "";
+            string newFilePath = Path.Combine(parentPath, finalFileNameWithExt);
+
+            var rootPath = Path.Combine(_hostingEnvironment.ContentRootPath, "UserData", userIdStr);
+            string oldPhysicalPath = Path.Combine(rootPath, file.FilePath);
+            string newPhysicalPath = Path.Combine(rootPath, newFilePath);
 
             try
             {
-                if (System.IO.File.Exists(oldFullPath))
-                {
-                    System.IO.File.Move(oldFullPath, newFullPath, overwrite: false);
-                }
-                else
-                {
-                    return NotFound($"Physical file '{oldFullPath}' not found.");
-                }
+                if (!System.IO.File.Exists(oldPhysicalPath))
+                    return NotFound("Physical file not found on disk.");
 
-                // Update DB
-                file.FileName = newName;              // base name only
-                file.FilePath = newFullPath;          // full path with extension remains
-                await _context.SaveChangesAsync();
-
-                return Ok(new
-                {
-                    message = "File renamed successfully.",
-                    newName = file.FileName,
-                    newPath = file.FilePath,
-                    file.FileType
-                });
+                Directory.CreateDirectory(Path.GetDirectoryName(newPhysicalPath)!);
+                System.IO.File.Move(oldPhysicalPath, newPhysicalPath);
             }
             catch (Exception ex)
             {
                 return StatusCode(500, $"Error renaming file: {ex.Message}");
             }
         }
+        
+            // ✅ Update DB (FileName = no extension, FilePath = with extension, FileType unchanged)
+            file.FileName = finalName;
+            file.FilePath = newFilePath;
+            file.FileType = normalizedFileType;
 
-
-
-
+            return Ok(new
+            {
+                message = "File renamed successfully",
+                fileId = file.FileID,
+                newName = file.FileName,   // no extension
+                newPath = file.FilePath,   // includes extension
+                fileType = file.FileType   // extension only
+            });
+        }
 
 
 

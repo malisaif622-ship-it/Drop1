@@ -1,17 +1,9 @@
 using Drop1.Api.Data;
 using Drop1.Api.Models;
 using Drop1.Models;
-using Microsoft.AspNetCore.Hosting;
-using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Hosting.Internal;
-using System;
-using System.Collections.Generic;
-using System.IO;
 using System.IO.Compression;
-using System.Linq;
-using System.Threading.Tasks;
 using System.Security.Claims;
 
 namespace Drop1.Api.Controllers
@@ -23,6 +15,15 @@ namespace Drop1.Api.Controllers
         private readonly AppDbContext _context;
         private readonly string _basePath = @"C:\Drop1\";  // Storage root
         private readonly IWebHostEnvironment _hostingEnvironment;
+
+        // Pakistan Standard Time (UTC+5)
+        private static readonly TimeZoneInfo PakistanTimeZone = TimeZoneInfo.CreateCustomTimeZone(
+            "Pakistan Standard Time", TimeSpan.FromHours(5), "Pakistan Standard Time", "PKT");
+
+        private DateTime GetPakistanTime()
+        {
+            return TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, PakistanTimeZone);
+        }
 
         public FolderController(AppDbContext context, IWebHostEnvironment hostingEnvironment)
         {
@@ -126,7 +127,7 @@ namespace Drop1.Api.Controllers
                 FolderName = candidate,
                 FolderPath = newFolderPath,
                 ParentFolderID = parentFolderId,
-                CreatedAt = DateTime.UtcNow,
+                CreatedAt = GetPakistanTime(),
                 IsDeleted = false
             };
 
@@ -212,7 +213,8 @@ namespace Drop1.Api.Controllers
                     FolderName = rootFolderName,
                     ParentFolderID = parentFolderId,
                     UserID = userId,
-                    FolderPath = createdRootFolderPath
+                    FolderPath = createdRootFolderPath,
+                    CreatedAt = GetPakistanTime()
                 };
                 _context.Folders.Add(newRoot);
                 await _context.SaveChangesAsync();
@@ -260,7 +262,8 @@ namespace Drop1.Api.Controllers
                             FolderName = folderName,
                             ParentFolderID = currentParentId,
                             UserID = userId,
-                            FolderPath = currentPath
+                            FolderPath = currentPath,
+                            CreatedAt = GetPakistanTime()
                         };
                         _context.Folders.Add(folderEntity);
                         await _context.SaveChangesAsync();
@@ -297,7 +300,8 @@ namespace Drop1.Api.Controllers
                                 FolderName = userRootFolderName,
                                 ParentFolderID = null,
                                 UserID = userId,
-                                FolderPath = userRootPath
+                                FolderPath = userRootPath,
+                                CreatedAt = GetPakistanTime()
                             };
                             _context.Folders.Add(userRootFolder);
                             await _context.SaveChangesAsync();
@@ -325,7 +329,7 @@ namespace Drop1.Api.Controllers
                     UserID = userId,
                     FilePath = destPath,             // still includes extension physically
                     FileType = fileType,             // extension/type stored separately
-                    UploadedAt = DateTime.UtcNow
+                    UploadedAt = GetPakistanTime()
                 };
 
                 _context.Files.Add(dbFile);
@@ -346,69 +350,104 @@ namespace Drop1.Api.Controllers
         [HttpPut("rename")]
         public async Task<IActionResult> RenameFolder(int folderId, string newName)
         {
-            var userId = HttpContext.Session.GetString("UserID");
-            if (userId == null)
+            var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? HttpContext.Session.GetString("UserID");
+            if (string.IsNullOrEmpty(userIdStr))
                 return Unauthorized("User not logged in.");
 
-            // ✅ 1) Get folder from DB
-            var folder = await _context.Folders.FirstOrDefaultAsync(f => f.FolderID == folderId && f.UserID.ToString() == userId && !f.IsDeleted);
+            if (string.IsNullOrWhiteSpace(newName))
+                return BadRequest("Folder name cannot be empty.");
+
+            int userId = int.Parse(userIdStr);
+
+            // 1) Load folder
+            var folder = await _context.Folders
+                .FirstOrDefaultAsync(f => f.FolderID == folderId && f.UserID == userId && !f.IsDeleted);
             if (folder == null)
                 return NotFound("Folder not found.");
 
-            // ✅ 2) Save old paths before changes
-            string oldFolderPath = folder.FolderPath;
-            string oldFolderName = folder.FolderName;
-
-            // ✅ 3) Parent directory
+            // 2) Capture old paths
+            string oldFolderPath = folder.FolderPath;                // absolute (as stored in your other APIs)
             string? parentPath = Path.GetDirectoryName(oldFolderPath);
+            if (string.IsNullOrEmpty(parentPath))
+                return BadRequest("Invalid folder path.");
 
-            // ✅ 4) Ensure unique name (like Windows Explorer renaming)
-            string finalName = newName;
+            // 3) Compute unique new name among siblings (DB + disk)
+            string baseName = newName.Trim();
+            if (string.IsNullOrWhiteSpace(baseName))
+                return BadRequest("Invalid new name.");
+
+            var siblingNames = await _context.Folders
+                .Where(f => f.UserID == userId
+                         && f.ParentFolderID == folder.ParentFolderID
+                         && f.FolderID != folderId
+                         && !f.IsDeleted)
+                .Select(f => f.FolderName)
+                .ToListAsync();
+
+            string finalName = baseName;
+            string newFolderPath = Path.Combine(parentPath, finalName);
             int counter = 2;
-            while (await _context.Folders.AnyAsync(f =>
-                f.UserID.ToString() == userId &&
-                f.FolderID != folderId &&
-                f.FolderPath == Path.Combine(parentPath ?? "", finalName)))
+            while (siblingNames.Any(n => n.Equals(finalName, StringComparison.OrdinalIgnoreCase))
+                   || Directory.Exists(newFolderPath))
             {
-                finalName = $"{newName} ({counter++})";
+                finalName = $"{baseName} ({counter++})";
+                newFolderPath = Path.Combine(parentPath, finalName);
             }
 
-            // ✅ 5) Compute new folder path
-            string newFolderPath = Path.Combine(parentPath ?? "", finalName);
-
-            // ✅ 6) Physical paths
-            var rootPath = Path.Combine(_hostingEnvironment.ContentRootPath, "UserData", userId);
-            var oldPhysicalPath = Path.Combine(rootPath, oldFolderPath);
-            var newPhysicalPath = Path.Combine(rootPath, newFolderPath);
-
-            // ✅ 7) Rename physically on disk
-            if (Directory.Exists(oldPhysicalPath))
+            // 4) Move physically on disk
+            try
             {
-                Directory.Move(oldPhysicalPath, newPhysicalPath);
+                if (!Directory.Exists(parentPath))
+                    Directory.CreateDirectory(parentPath);
+
+                if (Directory.Exists(oldFolderPath))
+                    Directory.Move(oldFolderPath, newFolderPath);
+                else
+                    return NotFound("Physical folder not found on disk.");
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, $"Failed to rename folder on disk: {ex.Message}");
             }
 
-            // ✅ 8) Update DB
+            // 5) Prepare safe prefix matching (boundary = separator)
+            string sep = Path.DirectorySeparatorChar.ToString();
+            string alt = Path.AltDirectorySeparatorChar.ToString();
+
+            string oldPrefixA = oldFolderPath.EndsWith(sep) ? oldFolderPath : oldFolderPath + sep;
+            string oldPrefixB = oldFolderPath.EndsWith(alt) ? oldFolderPath : oldFolderPath + alt;
+            string newPrefix = newFolderPath.EndsWith(sep) ? newFolderPath : newFolderPath + sep;
+
+            // 6) Update this folder in DB
             folder.FolderName = finalName;
             folder.FolderPath = newFolderPath;
 
-            // Update child folders
+            // 7) Update ONLY descendant folders (not siblings like "Uploaded Folder (2)")
             var childFolders = await _context.Folders
-                .Where(f => f.UserID.ToString() == userId && f.FolderPath.StartsWith(oldFolderPath))
+                .Where(f => f.UserID == userId && !f.IsDeleted &&
+                            (f.FolderPath.StartsWith(oldPrefixA) || f.FolderPath.StartsWith(oldPrefixB)))
                 .ToListAsync();
 
             foreach (var child in childFolders)
             {
-                child.FolderPath = child.FolderPath.Replace(oldFolderPath, newFolderPath);
+                if (child.FolderPath.StartsWith(oldPrefixA))
+                    child.FolderPath = newPrefix + child.FolderPath.Substring(oldPrefixA.Length);
+                else
+                    child.FolderPath = newPrefix + child.FolderPath.Substring(oldPrefixB.Length);
             }
 
-            // Update child files
+            // 8) Update ONLY descendant files (safe boundary with separator)
             var childFiles = await _context.Files
-                .Where(f => f.UserID.ToString() == userId && f.FilePath.StartsWith(oldFolderPath))
+                .Where(f => f.UserID == userId && !f.IsDeleted &&
+                            (f.FilePath.StartsWith(oldPrefixA) || f.FilePath.StartsWith(oldPrefixB)))
                 .ToListAsync();
 
-            foreach (var file in childFiles)
+            foreach (var fi in childFiles)
             {
-                file.FilePath = file.FilePath.Replace(oldFolderPath, newFolderPath);
+                if (fi.FilePath.StartsWith(oldPrefixA))
+                    fi.FilePath = newPrefix + fi.FilePath.Substring(oldPrefixA.Length);
+                else
+                    fi.FilePath = newPrefix + fi.FilePath.Substring(oldPrefixB.Length);
             }
 
             await _context.SaveChangesAsync();

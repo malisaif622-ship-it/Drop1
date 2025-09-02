@@ -9,7 +9,7 @@ namespace Drop1.Models
         public string FolderName { get; set; } = string.Empty;
         public int? ParentFolderID { get; set; }
         public long UserID { get; set; }
-        public DateTime CreatedAt { get; set; } = DateTime.Now;
+        public DateTime CreatedAt { get; set; }
         public bool IsDeleted { get; set; } = false;
         [Required, MaxLength(500)] public string FolderPath { get; set; } = string.Empty;
     }

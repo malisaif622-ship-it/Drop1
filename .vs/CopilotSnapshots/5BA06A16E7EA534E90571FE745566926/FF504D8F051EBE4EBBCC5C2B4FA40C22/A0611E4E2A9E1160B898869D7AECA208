@@ -1,0 +1,25 @@
+﻿// Models/Folder.cs
+using System.ComponentModel.DataAnnotations;
+
+namespace Drop1.Models
+{
+    public class Folder
+    {
+        // Pakistan Standard Time (UTC+5)
+        private static readonly TimeZoneInfo PakistanTimeZone = TimeZoneInfo.CreateCustomTimeZone(
+            "Pakistan Standard Time", TimeSpan.FromHours(5), "Pakistan Standard Time", "PKT");
+
+        private static DateTime GetPakistanTime()
+        {
+            return TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, PakistanTimeZone);
+        }
+
+        public int FolderID { get; set; }
+        public string FolderName { get; set; } = string.Empty;
+        public int? ParentFolderID { get; set; }
+        public long UserID { get; set; }
+        public DateTime CreatedAt { get; set; } = GetPakistanTime();
+        public bool IsDeleted { get; set; } = false;
+        [Required, MaxLength(500)] public string FolderPath { get; set; } = string.Empty;
+    }
+}

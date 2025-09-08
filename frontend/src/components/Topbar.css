@@ -1,0 +1,154 @@
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #f7fafc;
+  padding: 10px 20px;
+  border-bottom: 1px solid #e2e8f0;
+  position: relative;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #f7fafc;
+  padding: 10px 20px;
+  border-bottom: 1px solid #e2e8f0;
+  position: relative;
+}
+
+.search-form {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  max-width: 400px;
+  margin-right: 20px;
+  position: relative;
+}
+
+.search-bar {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid #cbd5e0;
+  border-radius: 4px 0 0 4px;
+  outline: none;
+}
+
+.search-bar:focus {
+  border-color: #3182ce;
+  box-shadow: 0 0 0 3px rgba(49, 130, 206, 0.1);
+}
+
+.search-btn {
+  padding: 8px 12px;
+  border: 1px solid #3182ce;
+  border-left: none;
+  border-radius: 0 4px 4px 0;
+  background: #3182ce;
+  color: white;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+.search-btn:hover:not(:disabled) {
+  background: #2c5aa0;
+}
+
+.search-btn:disabled {
+  background: #a0aec0;
+  cursor: not-allowed;
+}
+
+.clear-search-btn {
+  position: absolute;
+  right: 50px;
+  background: none;
+  border: none;
+  color: #718096;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 50%;
+  transition: background 0.2s;
+}
+
+.clear-search-btn:hover {
+  background: #e2e8f0;
+  color: #4a5568;
+}
+
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.create-btn,
+.upload-btn,
+.logout-btn {
+  padding: 8px 12px;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-weight: bold;
+  transition: background 0.2s;
+}
+
+.create-btn {
+  background: #3182ce;
+  color: white;
+}
+
+.upload-btn {
+  background: #38a169;
+  color: white;
+  position: relative;
+}
+
+.logout-btn {
+  background: #e53e3e;
+  color: white;
+}
+
+.create-btn:hover {
+  background: #2b6cb0;
+}
+
+.upload-btn:hover {
+  background: #2f855a;
+}
+
+.logout-btn:hover {
+  background: #c53030;
+}
+
+/* Dropdown */
+.upload-dropdown {
+  position: relative;
+}
+
+.dropdown-menu {
+  position: absolute;
+  top: 40px;
+  right: 0;
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  display: flex;
+  flex-direction: column;
+  z-index: 1000;
+}
+
+.dropdown-menu button {
+  background: none;
+  border: none;
+  padding: 10px 15px;
+  text-align: left;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.dropdown-menu button:hover {
+  background: #f1f5f9;
+}

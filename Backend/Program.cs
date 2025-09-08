@@ -16,7 +16,7 @@ builder.Services.AddSingleton<IConfiguration>(builder.Configuration);
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
-// ✅ 4) Enable Session
+// ✅ 4) Enable Session (Fixed for cross-site)
 builder.Services.AddDistributedMemoryCache();
 builder.Services.AddSession(options =>
 {
@@ -25,43 +25,63 @@ builder.Services.AddSession(options =>
     );
     options.Cookie.HttpOnly = true;
     options.Cookie.IsEssential = true;
+    options.Cookie.SecurePolicy = CookieSecurePolicy.Always; // ✅ must be secure
+    options.Cookie.SameSite = SameSiteMode.None;             // ✅ allow cross-site
+    options.Cookie.Name = "Drop1.Session";
+    options.Cookie.Path = "/";
 });
 
-// ✅ 5) Enable CORS
+// ✅ 5) Enable CORS (Fixed for credentials)
 builder.Services.AddCors(options =>
 {
-    options.AddPolicy("AllowAll", policy =>
-        policy.AllowAnyOrigin().AllowAnyHeader().AllowAnyMethod());
+    options.AddPolicy("AllowFrontend", policy =>
+    {
+        policy.WithOrigins("http://localhost:3000", "https://localhost:3000") // ✅ explicit only
+              .AllowAnyHeader()
+              .AllowAnyMethod()
+              .AllowCredentials();
+    });
 });
 
-// ✅ 6) Add Authentication (using Cookie/Session)
-builder.Services.AddAuthentication("Cookies")
-    .AddCookie("Cookies", options =>
-    {
-        options.LoginPath = "/Auth/Login";  // change if needed
-        options.LogoutPath = "/Auth/Logout";
-        options.AccessDeniedPath = "/Auth/AccessDenied";
-    });
+// ✅ Logging
+builder.Services.AddLogging(logging =>
+{
+    logging.AddConsole();
+    logging.SetMinimumLevel(LogLevel.Information);
+});
 
 var app = builder.Build();
 
-// ✅ 7) Middleware
+// ✅ Middleware Order
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
 }
 
+// 🔧 Request logging for debugging
+app.Use(async (context, next) =>
+{
+    Console.WriteLine($"Request: {context.Request.Method} {context.Request.Path}");
+    Console.WriteLine($"Origin: {context.Request.Headers["Origin"]}");
+    Console.WriteLine($"User-Agent: {context.Request.Headers["User-Agent"]}");
+
+    await next();
+
+    Console.WriteLine($"Response: {context.Response.StatusCode}");
+    if (context.Response.Headers.ContainsKey("Set-Cookie"))
+    {
+        Console.WriteLine($"Set-Cookie: {context.Response.Headers["Set-Cookie"]}");
+    }
+});
+
+app.UseCors("AllowFrontend");   // ✅ must come first
 app.UseHttpsRedirection();
-
-app.UseCors("AllowAll");
-
-app.UseSession();
-
-// 🔑 Must be in this order
-app.UseAuthentication();
-app.UseAuthorization();
-
+app.UseSession();               // ✅ before controllers
 app.MapControllers();
+
+Console.WriteLine("🚀 Backend started with session + CORS fixes");
+Console.WriteLine("📡 CORS enabled for http://localhost:3000 and https://localhost:3000");
+Console.WriteLine("🍪 Session cookie: Drop1.Session, SameSite=None, Secure=Always");
 
 app.Run();

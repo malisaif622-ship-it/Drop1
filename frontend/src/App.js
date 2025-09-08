@@ -1,19 +1,17 @@
-import { Routes, Route } from "react-router-dom";
+import React from "react";
+import { BrowserRouter as Router, Routes, Route, Navigate } from "react-router-dom";
 import LoginPage from "./pages/LoginPage";
 import DashboardPage from "./pages/DashboardPage";
-import SearchPage from "./pages/SearchPage";
-import Navbar from "./components/Navbar";
 
 function App() {
   return (
-    <div>
-      <Navbar />
+    <Router>
       <Routes>
-        <Route path="/" element={<LoginPage />} />
+        <Route path="/" element={<Navigate to="/login" />} />
+        <Route path="/login" element={<LoginPage />} />
         <Route path="/dashboard" element={<DashboardPage />} />
-        <Route path="/search" element={<SearchPage />} />
       </Routes>
-    </div>
+    </Router>
   );
 }
 

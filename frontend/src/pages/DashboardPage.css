@@ -1,0 +1,17 @@
+.dashboard-container {
+  display: flex;
+  height: 100vh;
+}
+
+.main-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.content-area {
+  flex: 1;
+  padding: 20px;
+  background: #edf2f7;
+  overflow-y: auto;
+}

@@ -62,10 +62,15 @@ public class AuthController : ControllerBase
 
         if (!valid) return Unauthorized("Invalid credentials.");
 
-        // 3) Create session
+        // 3) Create session with explicit session loading
+        await HttpContext.Session.LoadAsync(); // Ensure session is loaded
+
         HttpContext.Session.SetString("UserID", user.UserID.ToString());
         HttpContext.Session.SetString("FullName", user.FullName);
         HttpContext.Session.SetString("Department", user.Department ?? "");
+
+        // 🔧 IMPORTANT: Commit the session and wait
+        await HttpContext.Session.CommitAsync();
 
         // ✅ Also add claims so controllers like UploadFolder can use User.FindFirstValue
         var claims = new List<Claim>
@@ -76,34 +81,65 @@ public class AuthController : ControllerBase
         var identity = new ClaimsIdentity(claims, "session");
         HttpContext.User = new ClaimsPrincipal(identity);
 
+        // 🔧 DEBUGGING: Log session info
+        Console.WriteLine($"Session created for user {user.UserID}");
+        Console.WriteLine($"Session ID: {HttpContext.Session.Id}");
+        Console.WriteLine($"Session available: {HttpContext.Session.IsAvailable}");
+
         return Ok(new
         {
             message = "Logged in",
-            user = new { user.UserID, user.FullName, user.Department }
+            user = new { user.UserID, user.FullName, user.Department },
+            debug = new
+            {
+                sessionId = HttpContext.Session.Id,
+                sessionAvailable = HttpContext.Session.IsAvailable
+            }
         });
     }
 
     [HttpPost("logout")]
-    public IActionResult Logout()
+    public async Task<IActionResult> Logout()
     {
+        await HttpContext.Session.LoadAsync();
         HttpContext.Session.Clear();
+        await HttpContext.Session.CommitAsync();
         return Ok(new { message = "Logged out" });
     }
 
     [HttpGet("me")]
-    public IActionResult Me()
+    public async Task<IActionResult> Me()
     {
+        // 🔧 DEBUGGING: Log session info
+        Console.WriteLine($"Auth check - Session ID: {HttpContext.Session.Id}");
+        Console.WriteLine($"Auth check - Session available: {HttpContext.Session.IsAvailable}");
+
+        await HttpContext.Session.LoadAsync(); // Ensure session is loaded
+
         var uidString = HttpContext.Session.GetString("UserID");
+        Console.WriteLine($"Auth check - UserID from session: {uidString}");
+
         if (string.IsNullOrEmpty(uidString))
+        {
+            Console.WriteLine("Auth check failed - no UserID in session");
             return Unauthorized("Not logged in");
+        }
 
         var uid = long.Parse(uidString);
 
-        return Ok(new
+        var result = new
         {
             UserID = uid,
             FullName = HttpContext.Session.GetString("FullName"),
-            Department = HttpContext.Session.GetString("Department")
-        });
+            Department = HttpContext.Session.GetString("Department"),
+            debug = new
+            {
+                sessionId = HttpContext.Session.Id,
+                sessionAvailable = HttpContext.Session.IsAvailable
+            }
+        };
+
+        Console.WriteLine($"Auth check successful for user {uid}");
+        return Ok(result);
     }
 }

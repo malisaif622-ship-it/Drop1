@@ -18,12 +18,17 @@
   position: relative;
 }
 
-.search-form {
+.search-container {
   display: flex;
-  align-items: center;
+  flex-direction: column;
   flex: 1;
   max-width: 400px;
   margin-right: 20px;
+}
+
+.search-form {
+  display: flex;
+  align-items: center;
   position: relative;
 }
 
@@ -151,4 +156,102 @@
 
 .dropdown-menu button:hover {
   background: #f1f5f9;
+}
+
+/* Modal Styles */
+.modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
+
+.modal-content {
+  background: white;
+  padding: 20px;
+  border-radius: 8px;
+  min-width: 300px;
+  max-width: 500px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+}
+
+.modal-content h3 {
+  margin: 0 0 15px 0;
+  color: #2d3748;
+}
+
+.modal-content input {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid #cbd5e0;
+  border-radius: 4px;
+  margin-bottom: 15px;
+  box-sizing: border-box;
+}
+
+.modal-content input:focus {
+  outline: none;
+  border-color: #3182ce;
+  box-shadow: 0 0 0 3px rgba(49, 130, 206, 0.1);
+}
+
+.modal-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.modal-buttons button {
+  padding: 8px 16px;
+  border: 1px solid #cbd5e0;
+  border-radius: 4px;
+  cursor: pointer;
+  background: white;
+  color: #2d3748;
+}
+
+.modal-buttons button:last-child {
+  background: #3182ce;
+  color: white;
+  border-color: #3182ce;
+}
+
+.modal-buttons button:last-child:hover {
+  background: #2c5aa0;
+}
+
+.modal-buttons button:first-child:hover {
+  background: #f7fafc;
+}
+
+/* Search context indicator */
+.search-context {
+  font-size: 12px;
+  color: #718096;
+  margin-top: 4px;
+  text-align: left;
+}
+
+.context-label {
+  font-weight: 600;
+  color: #2d3748;
+}
+.modal-buttons button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.create-btn.disabled,
+.upload-btn.disabled,
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background-color: #e2e8f0;
+  color: #a0aec0;
 }

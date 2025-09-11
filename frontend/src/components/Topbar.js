@@ -2,57 +2,42 @@ import React, { useState } from "react";
 import "./Topbar.css";
 import apiService from "../services/api";
 
-function Topbar({ onSearchResults }) {
+function Topbar({ onSearchResults, onSearchInput, onFolderCreated, onFilesUploaded, currentFolderId, activeView }) {
   const [showUploadMenu, setShowUploadMenu] = useState(false);
   const [searchTerm, setSearchTerm] = useState("");
   const [isSearching, setIsSearching] = useState(false);
+  const [showCreateFolderModal, setShowCreateFolderModal] = useState(false);
+  const [folderName, setFolderName] = useState("");
 
   const handleSearch = async (e) => {
     e.preventDefault();
-    if (!searchTerm.trim()) {
-      alert("Please enter a search term");
-      return;
-    }
-
-    setIsSearching(true);
-    try {
-      console.log("Searching for:", searchTerm);
-      const response = await apiService.search(searchTerm.trim());
-      
-      if (response.ok) {
-        const searchResults = await response.json();
-        console.log("Search results:", searchResults);
-        
-        // Pass results to parent component if callback is provided
-        if (onSearchResults) {
-          onSearchResults(searchResults);
-        }
-        
-        const folders = searchResults.Folders || searchResults.folders || [];
-        const files = searchResults.Files || searchResults.files || [];
-        alert(`Search found ${folders.length} folders and ${files.length} files`);
-      } else {
-        const errorText = await response.text();
-        console.error("Search failed:", errorText);
-        alert(`Search failed: ${response.status} - ${errorText}`);
-      }
-    } catch (err) {
-      console.error("Search error:", err);
-      alert(`Search error: ${err.message}`);
-    } finally {
-      setIsSearching(false);
+    console.log("🔍 Manual search triggered for:", searchTerm);
+    if (onSearchInput) {
+      onSearchInput(searchTerm);
     }
   };
 
   const handleSearchInputChange = (e) => {
-    setSearchTerm(e.target.value);
+    const value = e.target.value;
+    setSearchTerm(value);
+    
+    // Clear any existing timeout
+    clearTimeout(window.searchTimeout);
+    
+    // Debounced search (300ms as recommended)
+    window.searchTimeout = setTimeout(() => {
+      console.log("🔍 Debounced search triggered for:", value);
+      if (onSearchInput) {
+        onSearchInput(value);
+      }
+    }, 300); // Wait 300ms after user stops typing
   };
 
   const clearSearch = () => {
+    console.log("🧹 Clearing search");
     setSearchTerm("");
-    // Reset to show all items if callback is provided
-    if (onSearchResults) {
-      onSearchResults(null); // null indicates to reload all items
+    if (onSearchInput) {
+      onSearchInput(""); // Empty string triggers "load all" in parent
     }
   };
 
@@ -85,9 +70,17 @@ function Topbar({ onSearchResults }) {
     }
   };
 
-  const handleCreateFolder = async () => {
+  const handleCreateFolder = () => {
+    setShowCreateFolderModal(true);
+  };
+
+  const handleCreateFolderSubmit = async () => {
+    if (!folderName.trim()) {
+      return;
+    }
+
     try {
-      console.log("Creating folder with API service...");
+      console.log("Creating folder with name:", folderName.trim());
       
       // First, let's test if we're authenticated
       try {
@@ -104,7 +97,16 @@ function Topbar({ onSearchResults }) {
         return;
       }
       
-      const response = await apiService.createFolder("New Folder");
+      // Defensive check for currentFolderId
+      console.log("Creating folder in currentFolderId:", currentFolderId, "type:", typeof currentFolderId);
+      
+      if (currentFolderId !== null && (typeof currentFolderId === 'undefined' || currentFolderId === 'undefined')) {
+        alert('Internal error: invalid current folder ID. Refresh the page or contact support.');
+        console.error('Invalid currentFolderId in Topbar:', currentFolderId);
+        return;
+      }
+      
+      const response = await apiService.createFolder(folderName.trim(), currentFolderId);
       console.log("Create folder response status:", response.status);
       console.log("Create folder response ok:", response.ok);
       
@@ -114,9 +116,16 @@ function Topbar({ onSearchResults }) {
         throw new Error(errorText || "Failed to create folder");
       }
       const data = await response.json();
-      alert("Folder created successfully!");
-      console.log("Created folder:", data);
-      // You might want to refresh the file list here
+      console.log("Folder created successfully:", data);
+      
+      // Notify parent to refresh file list
+      if (onFolderCreated) {
+        onFolderCreated();
+      }
+
+      // Close modal and clear input
+      setShowCreateFolderModal(false);
+      setFolderName("");
     } catch (err) {
       console.error("Create folder error:", err);
       if (err.message.includes('Network error')) {
@@ -142,12 +151,26 @@ function Topbar({ onSearchResults }) {
       }
 
       try {
-        const response = await apiService.uploadFiles(files);
+        // Defensive check for currentFolderId
+        console.log("Uploading files to currentFolderId:", currentFolderId, "type:", typeof currentFolderId);
+        
+        if (currentFolderId !== null && (typeof currentFolderId === 'undefined' || currentFolderId === 'undefined')) {
+          alert('Internal error: invalid current folder ID. Refresh the page or contact support.');
+          console.error('Invalid currentFolderId for upload in Topbar:', currentFolderId);
+          return;
+        }
+        
+        const response = await apiService.uploadFiles(files, currentFolderId);
         if (!response.ok) {
           const errorText = await response.text();
           throw new Error(errorText || "Failed to upload file");
         }
-        alert("File(s) uploaded successfully!");
+        console.log("File(s) uploaded successfully");
+        
+        // Notify parent to refresh file list
+        if (onFilesUploaded) {
+          onFilesUploaded();
+        }
       } catch (err) {
         console.error(err);
         if (err.message.includes('Network error')) {
@@ -176,12 +199,26 @@ function Topbar({ onSearchResults }) {
       }
 
       try {
-        const response = await apiService.uploadFolder(files);
+        // Defensive check for currentFolderId
+        console.log("Uploading folder to currentFolderId:", currentFolderId, "type:", typeof currentFolderId);
+        
+        if (currentFolderId !== null && (typeof currentFolderId === 'undefined' || currentFolderId === 'undefined')) {
+          alert('Internal error: invalid current folder ID. Refresh the page or contact support.');
+          console.error('Invalid currentFolderId for folder upload in Topbar:', currentFolderId);
+          return;
+        }
+        
+        const response = await apiService.uploadFolder(files, currentFolderId);
         if (!response.ok) {
           const errorText = await response.text();
           throw new Error(errorText || "Failed to upload folder");
         }
-        alert("Folder uploaded successfully!");
+        console.log("Folder uploaded successfully");
+        
+        // Notify parent to refresh file list
+        if (onFilesUploaded) {
+          onFilesUploaded();
+        }
       } catch (err) {
         console.error(err);
         if (err.message.includes('Network error')) {
@@ -207,49 +244,70 @@ function Topbar({ onSearchResults }) {
     }
   };
 
+  // Get search context label
+  const getSearchContext = () => {
+    if (activeView === "recycle") {
+      return "Recycle Bin";
+    } else if (currentFolderId) {
+      return `Current Folder`;
+    } else {
+      return "Root";
+    }
+  };
+
   return (
     <header className="topbar">
-      <form onSubmit={handleSearch} className="search-form">
-        <input 
-          type="text" 
-          placeholder="Search files and folders..." 
-          className="search-bar"
-          value={searchTerm}
-          onChange={handleSearchInputChange}
-          disabled={isSearching}
-        />
-        <button 
-          type="submit" 
-          className="search-btn"
-          disabled={isSearching || !searchTerm.trim()}
-        >
-          {isSearching ? "🔍..." : "🔍"}
-        </button>
-        {searchTerm && (
+      <div className="search-container">
+        <form onSubmit={handleSearch} className="search-form">
+          <input 
+            type="text" 
+            placeholder={`Search in ${getSearchContext()}...`}
+            className="search-bar"
+            value={searchTerm}
+            onChange={handleSearchInputChange}
+            disabled={isSearching}
+          />
           <button 
-            type="button" 
-            className="clear-search-btn"
-            onClick={clearSearch}
-            title="Clear search"
+            type="submit" 
+            className="search-btn"
+            disabled={isSearching || !searchTerm.trim()}
           >
-            ✕
+            {isSearching ? "🔍..." : "🔍"}
           </button>
-        )}
-      </form>
+          {searchTerm && (
+            <button 
+              type="button" 
+              className="clear-search-btn"
+              onClick={clearSearch}
+              title="Clear search"
+            >
+              ✕
+            </button>
+          )}
+        </form>
+        <div className="search-context">
+          Searching in: <span className="context-label">{getSearchContext()}</span>
+        </div>
+      </div>
 
       <div className="actions">
         <button className="create-btn" onClick={checkCurrentUser}>
           Check Auth
         </button>
 
-        <button className="create-btn" onClick={handleCreateFolder}>
+        <button 
+          className={`create-btn ${activeView === "recycle" ? "disabled" : ""}`} 
+          onClick={activeView === "recycle" ? () => alert("Cannot create folders in recycle bin") : handleCreateFolder}
+          disabled={activeView === "recycle"}
+        >
           + Create Folder
         </button>
 
         <div className="upload-dropdown">
           <button
-            className="upload-btn"
-            onClick={() => setShowUploadMenu(!showUploadMenu)}
+            className={`upload-btn ${activeView === "recycle" ? "disabled" : ""}`}
+            onClick={activeView === "recycle" ? () => alert("Cannot upload files in recycle bin") : () => setShowUploadMenu(!showUploadMenu)}
+            disabled={activeView === "recycle"}
           >
             ⬆ Upload
           </button>
@@ -265,6 +323,29 @@ function Topbar({ onSearchResults }) {
           🚪 Logout
         </button>
       </div>
+
+      {/* Create Folder Modal */}
+      {showCreateFolderModal && (
+        <div className="modal-overlay" onClick={() => setShowCreateFolderModal(false)}>
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
+            <h3>Create New Folder</h3>
+            <input
+              type="text"
+              placeholder="Enter folder name..."
+              value={folderName}
+              onChange={(e) => setFolderName(e.target.value)}
+              onKeyPress={(e) => e.key === 'Enter' && handleCreateFolderSubmit()}
+              autoFocus
+            />
+            <div className="modal-buttons">
+              <button onClick={() => setShowCreateFolderModal(false)}>Cancel</button>
+              <button onClick={handleCreateFolderSubmit} disabled={!folderName.trim()}>
+                Create
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </header>
   );
 }

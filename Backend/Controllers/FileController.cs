@@ -228,19 +228,24 @@ namespace Drop1.Controllers
             {
                 return StatusCode(500, $"Error renaming file: {ex.Message}");
             }
-        
+
             // ✅ Update DB (FileName = no extension, FilePath = with extension, FileType unchanged)
             file.FileName = finalName;
             file.FilePath = newFilePath;
             file.FileType = normalizedFileType;
 
+            await _context.SaveChangesAsync();
+
             return Ok(new
             {
                 message = "File renamed successfully",
-                fileId = file.FileID,
-                newName = file.FileName,   // no extension
-                newPath = file.FilePath,   // includes extension
-                fileType = file.FileType   // extension only
+                FileID = file.FileID,
+                FileName = file.FileName,   // no extension
+                FilePath = file.FilePath,   // includes extension
+                FileType = file.FileType,   // extension only
+                FolderID = file.FolderID,
+                FileSizeMB = file.FileSizeMB,
+                UploadedAt = file.UploadedAt
             });
         }
 
@@ -419,24 +424,97 @@ namespace Drop1.Controllers
         // =========================
         // GET FILE DETAILS API
         // =========================
-        [HttpGet("file/details/{fileId}")]
-        public async Task<IActionResult> GetFileDetails(int fileId)
+        //[HttpGet("details")]
+        //public async Task<IActionResult> GetFileDetails([FromQuery] int fileId)
+        //{
+        //    var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? HttpContext.Session.GetString("UserID");
+        //    if (string.IsNullOrEmpty(userIdStr)) return Unauthorized();
+        //    int userId = int.Parse(userIdStr);
+
+        //    var file = await _context.Files
+        //        .FirstOrDefaultAsync(f => f.FileID == fileId && f.UserID == userId && !f.IsDeleted);
+
+        //    if (file == null) return NotFound("File not found.");
+
+        //    return Ok(new
+        //    {
+        //        FileID = file.FileID,
+        //        FileName = file.FileName,
+        //        FileType = file.FileType,
+        //        FileSizeMB = file.FileSizeMB,
+        //        UploadedAt = file.UploadedAt,
+        //        FolderID = file.FolderID
+        //    });
+        //}
+
+        // =========================
+        // PERMANENT DELETE FILE API
+        // =========================
+        [HttpDelete("permanent-delete")]
+        public async Task<IActionResult> PermanentDeleteFile([FromQuery] int fileId)
         {
-            var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? HttpContext.Session.GetString("UserID");
-            if (string.IsNullOrEmpty(userIdStr)) return Unauthorized();
+            var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier)
+                            ?? HttpContext.Session.GetString("UserID");
+            if (string.IsNullOrEmpty(userIdStr))
+                return Unauthorized();
+
             int userId = int.Parse(userIdStr);
 
             var file = await _context.Files
-                .FirstOrDefaultAsync(f => f.FileID == fileId && f.UserID == userId && !f.IsDeleted);
+                .FirstOrDefaultAsync(f => f.FileID == fileId && f.UserID == userId && f.IsDeleted);
 
-            if (file == null) return NotFound("File not found.");
+            if (file == null)
+                return NotFound("File not found in recycle bin.");
+
+            try
+            {
+                // Delete physical file
+                if (System.IO.File.Exists(file.FilePath))
+                {
+                    System.IO.File.Delete(file.FilePath);
+                }
+
+                // Remove from database
+                _context.Files.Remove(file);
+                await _context.SaveChangesAsync();
+
+                return Ok(new { message = "File permanently deleted successfully." });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error permanently deleting file: {ex.Message}");
+            }
+        }
+
+        // =========================
+        // FILE DETAILS API
+        // =========================
+        [HttpGet("details")]
+        public async Task<IActionResult> GetFileDetails([FromQuery] int fileId)
+        {
+            var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier)
+                            ?? HttpContext.Session.GetString("UserID");
+            if (string.IsNullOrEmpty(userIdStr))
+                return Unauthorized();
+
+            int userId = int.Parse(userIdStr);
+
+            var file = await _context.Files
+                .FirstOrDefaultAsync(f => f.FileID == fileId && f.UserID == userId);
+
+            if (file == null)
+                return NotFound("File not found.");
 
             return Ok(new
             {
+                FileID = file.FileID,
                 FileName = file.FileName,
                 FileType = file.FileType,
                 FileSizeMB = file.FileSizeMB,
-                UploadedAt = file.UploadedAt
+                FilePath = file.FilePath,
+                FolderID = file.FolderID,
+                UploadedAt = file.UploadedAt,
+                IsDeleted = file.IsDeleted
             });
         }
     }

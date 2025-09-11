@@ -160,9 +160,9 @@ namespace Drop1.Api.Controllers
             int userId = int.Parse(userIdStr);
 
             // ---------- 2) Accept files ----------
-            var uploadedFiles = (files != null && files.Count > 1) ? files : Request.Form.Files.ToList();
-            if (uploadedFiles == null || uploadedFiles.Count == 1)
-                return BadRequest("No folder uploaded.");
+            var uploadedFiles = (files != null && files.Count > 0) ? files : Request.Form.Files.ToList();
+            if (uploadedFiles == null || uploadedFiles.Count == 0)
+                return BadRequest("No files uploaded.");
 
             // ---------- 3) Ensure root path ----------
             var userRootPath = Path.Combine("C:\\Drop1", userId.ToString());
@@ -192,10 +192,49 @@ namespace Drop1.Api.Controllers
             if (usedMb + uploadMb > totalStorageMb)
                 return BadRequest($"Uploading exceeds your {totalStorageMb} MB storage limit.");
 
-            bool anyHasPath = uploadedFiles.Any(f => (f.FileName ?? "").Contains("/") || (f.FileName ?? "").Contains("\\"));
+            // ---------- 6) Check for folder structure ----------
+            bool anyHasPath = uploadedFiles.Any(f =>
+                (f.FileName ?? "").Contains("/") || (f.FileName ?? "").Contains("\\"));
 
+            // ---------- 7) Handle single file without path ----------
+            if (!anyHasPath && uploadedFiles.Count == 1)
+            {
+                var file = uploadedFiles.First();
+                if (file.Length <= 0) return BadRequest("Empty file.");
+
+                var fileName = Path.GetFileName(file.FileName);
+                var destPath = Path.Combine(parentPath, fileName);
+
+                using (var stream = new FileStream(destPath, FileMode.Create))
+                    await file.CopyToAsync(stream);
+
+                var fileSizeMb = Math.Round((decimal)file.Length / (1024 * 1024), 4);
+
+                var dbFile = new FileItem
+                {
+                    FileName = Path.GetFileNameWithoutExtension(fileName),
+                    FileSizeMB = fileSizeMb,
+                    FolderID = parentFolderId ?? (await EnsureUserRootFolder(userId, userRootPath)),
+                    UserID = userId,
+                    FilePath = destPath,
+                    FileType = Path.GetExtension(fileName).TrimStart('.').ToLowerInvariant(),
+                    UploadedAt = GetPakistanTime()
+                };
+
+                _context.Files.Add(dbFile);
+                await _context.SaveChangesAsync();
+
+                user.UsedStorageMB += fileSizeMb;
+                _context.Users.Update(user);
+                await _context.SaveChangesAsync();
+
+                return Ok("Single file uploaded successfully.");
+            }
+
+            // ---------- 8) Otherwise, process as folder upload ----------
             int? createdRootFolderId = null;
             string createdRootFolderPath = null!;
+
             if (!anyHasPath && uploadedFiles.Count > 1)
             {
                 var baseName = "Uploaded Folder";
@@ -226,7 +265,7 @@ namespace Drop1.Api.Controllers
 
             decimal totalAddedMb = 0m;
 
-            // ---------- 6) Process files ----------
+            // ---------- 9) Process files ----------
             foreach (var file in uploadedFiles)
             {
                 if (file.Length <= 0) continue;
@@ -283,6 +322,7 @@ namespace Drop1.Api.Controllers
                 using (var stream = new FileStream(destPath, FileMode.Create))
                     await file.CopyToAsync(stream);
 
+                // ensure parent folder in DB exists
                 if (currentParentId == null)
                 {
                     if (parentFolderId != null)
@@ -310,10 +350,8 @@ namespace Drop1.Api.Controllers
                     }
                 }
 
-                // get name without extension for DB
-                var fileNameWithoutExt = Path.GetFileNameWithoutExtension(fileName);
-
-                decimal fileSizeMb = Math.Round((decimal)file.Length / (1024 * 1024), 4);
+                // save file in DB
+                var fileSizeMb = Math.Round((decimal)file.Length / (1024 * 1024), 4);
                 totalAddedMb += fileSizeMb;
 
                 string fileType = Path.GetExtension(fileName);
@@ -323,12 +361,12 @@ namespace Drop1.Api.Controllers
 
                 var dbFile = new FileItem
                 {
-                    FileName = fileNameWithoutExt,   // ✅ no extension in DB
+                    FileName = Path.GetFileNameWithoutExtension(fileName),
                     FileSizeMB = fileSizeMb,
                     FolderID = currentParentId.Value,
                     UserID = userId,
-                    FilePath = destPath,             // still includes extension physically
-                    FileType = fileType,             // extension/type stored separately
+                    FilePath = destPath,
+                    FileType = fileType,
                     UploadedAt = GetPakistanTime()
                 };
 
@@ -336,13 +374,37 @@ namespace Drop1.Api.Controllers
                 await _context.SaveChangesAsync();
             }
 
-            // ---------- 7) Update UsedStorageMB ----------
+            // ---------- 10) Update UsedStorageMB ----------
             user.UsedStorageMB += totalAddedMb;
             _context.Users.Update(user);
             await _context.SaveChangesAsync();
 
             return Ok("Folder uploaded successfully with hierarchy.");
         }
+
+        // helper to ensure root folder exists in DB
+        private async Task<int> EnsureUserRootFolder(int userId, string userRootPath)
+        {
+            var userRootFolderName = Path.GetFileName(userRootPath) ?? userId.ToString();
+            var userRootFolder = await _context.Folders
+                .FirstOrDefaultAsync(f => f.FolderName == userRootFolderName && f.ParentFolderID == null && f.UserID == userId);
+
+            if (userRootFolder == null)
+            {
+                userRootFolder = new Folder
+                {
+                    FolderName = userRootFolderName,
+                    ParentFolderID = null,
+                    UserID = userId,
+                    FolderPath = userRootPath,
+                    CreatedAt = GetPakistanTime()
+                };
+                _context.Folders.Add(userRootFolder);
+                await _context.SaveChangesAsync();
+            }
+            return userRootFolder.FolderID;
+        }
+
 
         // =========================
         // RENAME FOLDER API
@@ -452,7 +514,15 @@ namespace Drop1.Api.Controllers
 
             await _context.SaveChangesAsync();
 
-            return Ok(new { message = "Folder renamed successfully", newName = finalName });
+            return Ok(new
+            {
+                message = "Folder renamed successfully",
+                FolderID = folder.FolderID,
+                FolderName = folder.FolderName,
+                FolderPath = folder.FolderPath,
+                ParentFolderID = folder.ParentFolderID,
+                CreatedAt = folder.CreatedAt
+            });
         }
 
         // =========================
@@ -711,50 +781,223 @@ namespace Drop1.Api.Controllers
         // =========================
         // GET FOLDER DETAILS API
         // =========================
-        [HttpGet("details/{folderId}")]
-        public async Task<IActionResult> GetFolderDetails(int folderId)
+        //[HttpGet("details")]
+        //public async Task<IActionResult> GetFolderDetails([FromQuery] int folderId)
+        //{
+        //    var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? HttpContext.Session.GetString("UserID");
+        //    if (string.IsNullOrEmpty(userIdStr)) return Unauthorized();
+        //    int userId = int.Parse(userIdStr);
+
+        //    var folder = await _context.Folders
+        //        .FirstOrDefaultAsync(f => f.FolderID == folderId && f.UserID == userId && !f.IsDeleted);
+
+        //    if (folder == null) return NotFound("Folder not found.");
+
+        //    // ✅ Subfolders
+        //    var subfolders = await _context.Folders
+        //        .Where(f => f.ParentFolderID == folderId && f.UserID == userId && !f.IsDeleted)
+        //        .Select(f => new
+        //        {
+        //            f.FolderName,
+        //            f.CreatedAt
+        //        })
+        //        .ToListAsync();
+
+        //    // ✅ Files
+        //    var files = await _context.Files
+        //        .Where(f => f.FolderID == folderId && f.UserID == userId && !f.IsDeleted)
+        //        .Select(f => new
+        //        {
+        //            f.FileName,
+        //            f.FileSizeMB,
+        //            f.FileType,
+        //            f.UploadedAt
+        //        })
+        //        .ToListAsync();
+
+        //    // ✅ Calculate folder size
+        //    var totalSizeMB = files.Sum(f => f.FileSizeMB);
+
+        //    return Ok(new
+        //    {
+        //        FolderID = folder.FolderID,
+        //        FolderName = folder.FolderName,
+        //        CreatedAt = folder.CreatedAt,
+        //        TotalFiles = files.Count,
+        //        TotalFolders = subfolders.Count,
+        //        TotalSizeMB = totalSizeMB,
+        //        ParentFolderID = folder.ParentFolderID
+        //    });
+        //}
+
+        // =========================
+        // HELPER METHODS
+        // =========================
+        private async Task UpdateSubfolderPaths(int userId, string oldPath, string newPath)
         {
-            var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? HttpContext.Session.GetString("UserID");
-            if (string.IsNullOrEmpty(userIdStr)) return Unauthorized();
+            // Update all subfolders
+            var subfolders = await _context.Folders
+                .Where(f => f.UserID == userId && f.FolderPath.StartsWith(oldPath + "\\"))
+                .ToListAsync();
+
+            foreach (var subfolder in subfolders)
+            {
+                subfolder.FolderPath = subfolder.FolderPath.Replace(oldPath, newPath);
+            }
+
+            // Update all files in this folder and subfolders
+            var files = await _context.Files
+                .Where(f => f.UserID == userId && f.FilePath.StartsWith(oldPath + "\\"))
+                .ToListAsync();
+
+            foreach (var file in files)
+            {
+                file.FilePath = file.FilePath.Replace(oldPath, newPath);
+            }
+        }
+
+        private async Task SoftDeleteFolderRecursively(int userId, int folderId)
+        {
+            // Get the folder
+            var folder = await _context.Folders
+                .FirstOrDefaultAsync(f => f.FolderID == folderId && f.UserID == userId);
+
+            if (folder != null)
+            {
+                folder.IsDeleted = true;
+
+                // Delete all files in this folder
+                var files = await _context.Files
+                    .Where(f => f.FolderID == folderId && f.UserID == userId)
+                    .ToListAsync();
+
+                foreach (var file in files)
+                {
+                    file.IsDeleted = true;
+                }
+
+                // Recursively delete all subfolders
+                var subfolders = await _context.Folders
+                    .Where(f => f.ParentFolderID == folderId && f.UserID == userId)
+                    .ToListAsync();
+
+                foreach (var subfolder in subfolders)
+                {
+                    await SoftDeleteFolderRecursively(userId, subfolder.FolderID);
+                }
+            }
+        }
+
+        // =========================
+        // PERMANENT DELETE FOLDER API
+        // =========================
+        [HttpDelete("permanent-delete")]
+        public async Task<IActionResult> PermanentDeleteFolder([FromQuery] int folderId)
+        {
+            var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier)
+                            ?? HttpContext.Session.GetString("UserID");
+            if (string.IsNullOrEmpty(userIdStr))
+                return Unauthorized();
+
             int userId = int.Parse(userIdStr);
 
             var folder = await _context.Folders
-                .FirstOrDefaultAsync(f => f.FolderID == folderId && f.UserID == userId && !f.IsDeleted);
+                .FirstOrDefaultAsync(f => f.FolderID == folderId && f.UserID == userId && f.IsDeleted);
 
-            if (folder == null) return NotFound("Folder not found.");
+            if (folder == null)
+                return NotFound("Folder not found in recycle bin.");
 
-            // ✅ Subfolders
-            var subfolders = await _context.Folders
-                .Where(f => f.ParentFolderID == folderId && f.UserID == userId && !f.IsDeleted)
-                .Select(f => new
-                {
-                    f.FolderName,
-                    f.CreatedAt
-                })
-                .ToListAsync();
+            try
+            {
+                await PermanentDeleteFolderRecursively(userId, folderId);
+                return Ok(new { message = "Folder permanently deleted successfully." });
+            }
+            catch (Exception ex)
+            {
+                return BadRequest($"Error permanently deleting folder: {ex.Message}");
+            }
+        }
 
-            // ✅ Files
+        private async Task PermanentDeleteFolderRecursively(int userId, int folderId)
+        {
+            // Get all files in this folder
             var files = await _context.Files
-                .Where(f => f.FolderID == folderId && f.UserID == userId && !f.IsDeleted)
-                .Select(f => new
-                {
-                    f.FileName,
-                    f.FileSizeMB,
-                    f.FileType,
-                    f.UploadedAt
-                })
+                .Where(f => f.FolderID == folderId && f.UserID == userId && f.IsDeleted)
                 .ToListAsync();
 
-            // ✅ Calculate folder size
-            var totalSizeMB = files.Sum(f => f.FileSizeMB);
+            // Delete physical files
+            foreach (var file in files)
+            {
+                if (System.IO.File.Exists(file.FilePath))
+                {
+                    System.IO.File.Delete(file.FilePath);
+                }
+                _context.Files.Remove(file);
+            }
+
+            // Get all subfolders
+            var subfolders = await _context.Folders
+                .Where(f => f.ParentFolderID == folderId && f.UserID == userId && f.IsDeleted)
+                .ToListAsync();
+
+            // Recursively delete subfolders
+            foreach (var subfolder in subfolders)
+            {
+                await PermanentDeleteFolderRecursively(userId, subfolder.FolderID);
+            }
+
+            // Delete physical folder
+            var folder = await _context.Folders
+                .FirstOrDefaultAsync(f => f.FolderID == folderId && f.UserID == userId && f.IsDeleted);
+
+            if (folder != null)
+            {
+                if (Directory.Exists(folder.FolderPath))
+                {
+                    Directory.Delete(folder.FolderPath, true);
+                }
+                _context.Folders.Remove(folder);
+            }
+
+            await _context.SaveChangesAsync();
+        }
+
+        // =========================
+        // FOLDER DETAILS API
+        // =========================
+        [HttpGet("details")]
+        public async Task<IActionResult> GetFolderDetails([FromQuery] int folderId)
+        {
+            var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier)
+                            ?? HttpContext.Session.GetString("UserID");
+            if (string.IsNullOrEmpty(userIdStr))
+                return Unauthorized();
+
+            int userId = int.Parse(userIdStr);
+
+            var folder = await _context.Folders
+                .FirstOrDefaultAsync(f => f.FolderID == folderId && f.UserID == userId);
+
+            if (folder == null)
+                return NotFound("Folder not found.");
+
+            // Get counts of files and subfolders
+            var fileCount = await _context.Files
+                .CountAsync(f => f.FolderID == folderId && f.UserID == userId && !f.IsDeleted);
+
+            var subfolderCount = await _context.Folders
+                .CountAsync(f => f.ParentFolderID == folderId && f.UserID == userId && !f.IsDeleted);
 
             return Ok(new
             {
+                FolderID = folder.FolderID,
                 FolderName = folder.FolderName,
+                FolderPath = folder.FolderPath,
+                ParentFolderID = folder.ParentFolderID,
                 CreatedAt = folder.CreatedAt,
-                TotalFiles = files.Count,
-                TotalFolders = subfolders.Count,
-                TotalSizeMB = totalSizeMB
+                IsDeleted = folder.IsDeleted,
+                FileCount = fileCount,
+                SubfolderCount = subfolderCount
             });
         }
     }

@@ -29,6 +29,33 @@
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
 }
 
+.file-card.folder {
+  background: #f0f8ff;
+  border-color: #4299e1;
+  user-select: none; /* Prevent text selection that can interfere with double-click */
+}
+
+.file-card.folder:hover {
+  background: #e6f3ff;
+  box-shadow: 0 3px 12px rgba(66, 153, 225, 0.15);
+}
+
+/* Ensure folder name and icon don't block double-click events */
+.file-card.folder .file-name,
+.file-card.folder .file-icon {
+  pointer-events: none;
+}
+
+/* Ensure buttons and menu have proper pointer events */
+.file-card.folder button,
+.file-card.folder .file-menu {
+  pointer-events: auto;
+}
+
+.file-card:hover .file-menu {
+  opacity: 1;
+}
+
 .file-menu {
   position: absolute;
   top: 8px;
@@ -46,6 +73,11 @@
   font-weight: bold;
   opacity: 0;
   transition: opacity 0.2s;
+  z-index: 10;
+}
+
+.file-menu:hover {
+  background: #e2e8f0;
 }
 
 .file-card:hover .file-menu {
@@ -171,6 +203,13 @@
   font-size: 0.95rem;
   color: #2d3748;
   word-wrap: break-word;
+  font-weight: 500;
+  margin-top: 8px;
+  min-height: 20px;
+  display: block;
+  background: rgba(255, 255, 255, 0.8);
+  padding: 2px 4px;
+  border-radius: 4px;
 }
 
 .folder {
@@ -179,4 +218,12 @@
 
 .file {
   border: 1px solid #68d391;
+}
+
+.folder:hover {
+  cursor: pointer;
+}
+
+.folder .file-name {
+  user-select: none;
 }

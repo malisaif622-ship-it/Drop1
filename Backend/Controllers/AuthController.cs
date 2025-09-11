@@ -127,11 +127,21 @@ public class AuthController : ControllerBase
 
         var uid = long.Parse(uidString);
 
+        // Get user with storage information
+        var user = await _db.Users.FirstOrDefaultAsync(u => u.UserID == uid);
+        if (user == null)
+        {
+            return Unauthorized("User not found");
+        }
+
         var result = new
         {
             UserID = uid,
             FullName = HttpContext.Session.GetString("FullName"),
             Department = HttpContext.Session.GetString("Department"),
+            // ✅ Add storage information for frontend display
+            UsedStorageMB = user.UsedStorageMB,
+            TotalStorageMB = user.TotalStorageMB,
             debug = new
             {
                 sessionId = HttpContext.Session.Id,

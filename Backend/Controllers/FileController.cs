@@ -33,6 +33,8 @@ namespace Drop1.Controllers
         // UPLOAD FILE API
         // =========================
         [HttpPost("upload-file")]
+        [DisableRequestSizeLimit]
+        [RequestFormLimits(MultipartBodyLengthLimit = long.MaxValue, ValueLengthLimit = int.MaxValue)]
         public async Task<IActionResult> UploadFile(List<IFormFile> files, int? parentFolderId = null)
         {
             // ---------- 1) Auth ----------
@@ -418,6 +420,8 @@ namespace Drop1.Controllers
             var mimeType = "application/octet-stream"; // you can also detect actual mime type if needed
 
             // ✅ Stream file to client
+            // Expose Content-Disposition header for CORS so frontend can read filename
+            Response.Headers["Access-Control-Expose-Headers"] = "Content-Disposition";
             return PhysicalFile(file.FilePath, mimeType, fileName);
         }
 
@@ -468,14 +472,37 @@ namespace Drop1.Controllers
 
             try
             {
-                // Delete physical file
-                if (System.IO.File.Exists(file.FilePath))
+                // Capture size to decrease user storage
+                decimal removedMb = file.FileSizeMB;
+
+                // Correct user recycle bin path under configured base path
+                var userRoot = Path.Combine(_basePath, userId.ToString());
+                var recycleBinDir = Path.Combine(userRoot, "RecycleBin");
+                var fileNameOnly = Path.GetFileName(file.FilePath);
+                var recycleCandidate = Path.Combine(recycleBinDir, fileNameOnly);
+
+                // Try deleting from recycle bin first
+                if (System.IO.File.Exists(recycleCandidate))
+                {
+                    System.IO.File.Delete(recycleCandidate);
+                }
+                // If not found in recycle bin, try deleting from original location
+                else if (System.IO.File.Exists(file.FilePath))
                 {
                     System.IO.File.Delete(file.FilePath);
                 }
 
                 // Remove from database
                 _context.Files.Remove(file);
+
+                // Update user's used storage
+                var user = await _context.Users.FirstOrDefaultAsync(u => u.UserID == userId);
+                if (user != null)
+                {
+                    user.UsedStorageMB = Math.Max(0, user.UsedStorageMB - removedMb);
+                    _context.Users.Update(user);
+                }
+
                 await _context.SaveChangesAsync();
 
                 return Ok(new { message = "File permanently deleted successfully." });
@@ -485,6 +512,7 @@ namespace Drop1.Controllers
                 return BadRequest($"Error permanently deleting file: {ex.Message}");
             }
         }
+
 
         // =========================
         // FILE DETAILS API

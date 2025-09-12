@@ -236,11 +236,20 @@ function Topbar({ onSearchResults, onSearchInput, onFolderCreated, onFilesUpload
     try {
       const response = await apiService.logout();
       if (!response.ok) throw new Error("Logout failed");
+      
+      // Clear local storage
+      localStorage.removeItem('user');
+      localStorage.removeItem('token');
+      
       alert("Logged out successfully!");
-      window.location.href = "/"; // redirect to login page
+      window.location.href = "/login"; // redirect to login page
     } catch (err) {
       console.error(err);
-      alert("Error logging out");
+      // Even if API call fails, clear local storage and redirect
+      localStorage.removeItem('user');
+      localStorage.removeItem('token');
+      alert("Logged out (API error occurred)");
+      window.location.href = "/login";
     }
   };
 

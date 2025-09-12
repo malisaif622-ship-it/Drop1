@@ -246,18 +246,11 @@ function DashboardPage() {
   const handleFileDownload = async (file) => {
     console.log("⬇️ Downloading file:", file);
     try {
-      const response = await api.get(`/files/${file.id}/download`, {
-        responseType: 'blob'
-      });
-      
-      const url = window.URL.createObjectURL(new Blob([response.data]));
-      const link = document.createElement('a');
-      link.href = url;
-      link.setAttribute('download', file.name);
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      
+      // Use unified API; pass fallback file name (name + extension)
+      const name = file.FileName || file.fileName || file.name || 'file';
+      const ext = file.FileType || file.fileType || file.extension || '';
+      const fallback = ext ? `${name}.${ext}` : name;
+      await api.downloadFile(file.id || file.FileID || file.fileId, fallback);
     } catch (error) {
       console.error("❌ Download error:", error);
       alert('Failed to download file');
@@ -357,9 +350,18 @@ function DashboardPage() {
     }
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem('token');
-    navigate('/login');
+  const handleLogout = async () => {
+    try {
+      // Call logout API
+      await api.logout();
+    } catch (error) {
+      console.error('Logout API error:', error);
+    } finally {
+      // Clear local storage and redirect
+      localStorage.removeItem('user');
+      localStorage.removeItem('token');
+      navigate('/login');
+    }
   };
 
   // Render breadcrumb

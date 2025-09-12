@@ -90,14 +90,27 @@ class ApiService {
     });
   }
 
-  async downloadFile(fileId) {
+  async downloadFile(fileId, fallbackFileName) {
     const response = await this.fetchWithCredentials(`/api/file/download-file/${encodeURIComponent(fileId)}`);
     if (response.ok) {
       const blob = await response.blob();
+      
+      // Get filename from Content-Disposition header or use fileId as fallback
+      let filename = String(fileId);
+      const contentDisposition = response.headers.get('Content-Disposition');
+      if (contentDisposition) {
+        const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+        if (filenameMatch && filenameMatch[1]) {
+          filename = filenameMatch[1].replace(/['"]/g, '');
+        }
+      } else if (fallbackFileName) {
+        filename = fallbackFileName;
+      }
+      
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = ''; // Let browser determine filename from headers
+      link.download = filename;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -112,8 +125,9 @@ class ApiService {
     });
   }
 
+  // NOTE: Details endpoints in backend expect query params
   async getFileDetails(fileId) {
-    return this.fetchWithCredentials(`/api/file/file/details/${encodeURIComponent(fileId)}`);
+    return this.fetchWithCredentials(`/api/file/details?fileId=${encodeURIComponent(fileId)}`);
   }
 
   // Folder APIs
@@ -151,9 +165,15 @@ class ApiService {
       throw new Error('Invalid parent folder ID');
     }
 
-    const url = parentFolderId 
-      ? `/api/folder/upload-folder?parentFolderId=${encodeURIComponent(parentFolderId)}`
-      : '/api/folder/upload-folder';
+    // Add parameters to handle duplicate folder names
+    const params = new URLSearchParams();
+    if (parentFolderId) {
+      params.append('parentFolderId', parentFolderId);
+    }
+    params.append('handleDuplicates', 'true'); // Tell backend to handle duplicate names
+    params.append('createNewFolder', 'true'); // Create new folder instead of merging
+
+    const url = `/api/folder/upload-folder?${params.toString()}`;
 
     console.log("API: uploadFolder URL:", url);
 
@@ -199,10 +219,21 @@ class ApiService {
     const response = await this.fetchWithCredentials(`/api/folder/download/${encodeURIComponent(folderId)}`);
     if (response.ok) {
       const blob = await response.blob();
+      
+      // Get folder name from Content-Disposition header or use folderId as fallback
+      let foldername = `folder_${folderId}.zip`;
+      const contentDisposition = response.headers.get('Content-Disposition');
+      if (contentDisposition) {
+        const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+        if (filenameMatch && filenameMatch[1]) {
+          foldername = filenameMatch[1].replace(/['"]/g, '');
+        }
+      }
+      
       const url = window.URL.createObjectURL(blob);
       const link = document.createElement('a');
       link.href = url;
-      link.download = ''; // Let browser determine filename from headers
+      link.download = foldername;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -212,7 +243,7 @@ class ApiService {
   }
 
   async getFolderDetails(folderId) {
-    return this.fetchWithCredentials(`/api/folder/details/${encodeURIComponent(folderId)}`);
+    return this.fetchWithCredentials(`/api/folder/details?folderId=${encodeURIComponent(folderId)}`);
   }
 
   // Get all items API
@@ -315,24 +346,46 @@ class ApiService {
 
   // Permanent delete APIs
   async permanentDeleteFile(fileId) {
-    return this.fetchWithCredentials(`/api/file/permanent-delete?fileId=${fileId}`, {
+    // Try RESTful path first, then fallback to query param style
+    let response = await this.fetchWithCredentials(`/api/file/permanent-delete/${fileId}`, {
       method: 'DELETE',
     });
+    if (!response.ok && (response.status === 404 || response.status === 400 || response.status === 405)) {
+      try {
+        response = await this.fetchWithCredentials(`/api/file/permanent-delete?fileId=${encodeURIComponent(fileId)}`, {
+          method: 'DELETE',
+        });
+      } catch (e) {
+        // swallow to return original response below
+      }
+    }
+    return response;
   }
 
   async permanentDeleteFolder(folderId) {
-    return this.fetchWithCredentials(`/api/folder/permanent-delete?folderId=${folderId}`, {
+    // Try RESTful path first, then fallback to query param style
+    let response = await this.fetchWithCredentials(`/api/folder/permanent-delete/${folderId}`, {
       method: 'DELETE',
     });
+    if (!response.ok && (response.status === 404 || response.status === 400 || response.status === 405)) {
+      try {
+        response = await this.fetchWithCredentials(`/api/folder/permanent-delete?folderId=${encodeURIComponent(folderId)}`, {
+          method: 'DELETE',
+        });
+      } catch (e) {
+        // swallow to return original response below
+      }
+    }
+    return response;
   }
 
-  // Details APIs
+  // Details APIs (ensure only query-param style is used)
   async getFileDetails(fileId) {
-    return this.fetchWithCredentials(`/api/file/details?fileId=${fileId}`);
+    return this.fetchWithCredentials(`/api/file/details?fileId=${encodeURIComponent(fileId)}`);
   }
 
   async getFolderDetails(folderId) {
-    return this.fetchWithCredentials(`/api/folder/details?folderId=${folderId}`);
+    return this.fetchWithCredentials(`/api/folder/details?folderId=${encodeURIComponent(folderId)}`);
   }
 
   // Generic GET method for backward compatibility

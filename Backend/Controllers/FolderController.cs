@@ -150,7 +150,9 @@ namespace Drop1.Api.Controllers
         // UPLOAD FOLDER API
         // =========================
         [HttpPost("upload-folder")]
-        public async Task<IActionResult> UploadFolder(List<IFormFile> files, int? parentFolderId = null)
+        [DisableRequestSizeLimit]
+        [RequestFormLimits(MultipartBodyLengthLimit = long.MaxValue, ValueLengthLimit = int.MaxValue)]
+        public async Task<IActionResult> UploadFolder(List<IFormFile> files, int? parentFolderId = null, string? rootFolderName = null)
         {
             // ---------- 1) Auth ----------
             var userIdStr = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? HttpContext.Session.GetString("UserID");
@@ -161,8 +163,8 @@ namespace Drop1.Api.Controllers
 
             // ---------- 2) Accept files ----------
             var uploadedFiles = (files != null && files.Count > 0) ? files : Request.Form.Files.ToList();
-            if (uploadedFiles == null || uploadedFiles.Count == 0)
-                return BadRequest("No files uploaded.");
+            // Allow empty-folder creation when no files are uploaded
+            bool isEmptyFolderRequest = uploadedFiles == null || uploadedFiles.Count == 0;
 
             // ---------- 3) Ensure root path ----------
             var userRootPath = Path.Combine("C:\\Drop1", userId.ToString());
@@ -193,11 +195,11 @@ namespace Drop1.Api.Controllers
                 return BadRequest($"Uploading exceeds your {totalStorageMb} MB storage limit.");
 
             // ---------- 6) Check for folder structure ----------
-            bool anyHasPath = uploadedFiles.Any(f =>
+            bool anyHasPath = !isEmptyFolderRequest && uploadedFiles.Any(f =>
                 (f.FileName ?? "").Contains("/") || (f.FileName ?? "").Contains("\\"));
 
             // ---------- 7) Handle single file without path ----------
-            if (!anyHasPath && uploadedFiles.Count == 1)
+            if (!anyHasPath && !isEmptyFolderRequest && uploadedFiles.Count == 1)
             {
                 var file = uploadedFiles.First();
                 if (file.Length <= 0) return BadRequest("Empty file.");
@@ -235,21 +237,49 @@ namespace Drop1.Api.Controllers
             int? createdRootFolderId = null;
             string createdRootFolderPath = null!;
 
-            if (!anyHasPath && uploadedFiles.Count > 1)
+            // Handle explicit empty-folder creation via rootFolderName
+            if (isEmptyFolderRequest)
             {
-                var baseName = "Uploaded Folder";
-                var rootFolderName = baseName;
-                int counter = 1;
-                while (await _context.Folders.AnyAsync(f => f.FolderName == rootFolderName && f.ParentFolderID == parentFolderId && f.UserID == userId))
+                var emptyBaseName = string.IsNullOrWhiteSpace(rootFolderName) ? "New Folder" : rootFolderName!.Trim();
+                var emptyUniqueName = emptyBaseName;
+                int emptyCounter = 2;
+                var emptyCandidatePath = Path.Combine(parentPath, emptyUniqueName);
+                while (Directory.Exists(emptyCandidatePath) || await _context.Folders.AnyAsync(f => f.UserID == userId && f.ParentFolderID == parentFolderId && !f.IsDeleted && f.FolderName == emptyUniqueName))
                 {
-                    counter++;
-                    rootFolderName = $"{baseName} ({counter})";
+                    emptyUniqueName = $"{emptyBaseName} ({emptyCounter++})";
+                    emptyCandidatePath = Path.Combine(parentPath, emptyUniqueName);
                 }
 
-                createdRootFolderPath = Path.Combine(parentPath, rootFolderName);
+                Directory.CreateDirectory(emptyCandidatePath);
+                var emptyFolder = new Folder
+                {
+                    UserID = userId,
+                    FolderName = emptyUniqueName,
+                    FolderPath = emptyCandidatePath,
+                    ParentFolderID = parentFolderId,
+                    CreatedAt = GetPakistanTime(),
+                    IsDeleted = false
+                };
+                _context.Folders.Add(emptyFolder);
+                await _context.SaveChangesAsync();
+                return Ok(new { message = "Empty folder created successfully.", folderId = emptyFolder.FolderID, folderName = emptyFolder.FolderName });
+            }
+
+            if (!anyHasPath && uploadedFiles.Count > 1)
+            {
+                var baseRootName = "Uploaded Folder";
+                var uniqueRootName = baseRootName;
+                int nameCounter = 1;
+                while (await _context.Folders.AnyAsync(f => f.FolderName == uniqueRootName && f.ParentFolderID == parentFolderId && f.UserID == userId))
+                {
+                    nameCounter++;
+                    uniqueRootName = $"{baseRootName} ({nameCounter})";
+                }
+
+                createdRootFolderPath = Path.Combine(parentPath, uniqueRootName);
                 var newRoot = new Folder
                 {
-                    FolderName = rootFolderName,
+                    FolderName = uniqueRootName,
                     ParentFolderID = parentFolderId,
                     UserID = userId,
                     FolderPath = createdRootFolderPath,
@@ -266,6 +296,55 @@ namespace Drop1.Api.Controllers
             decimal totalAddedMb = 0m;
 
             // ---------- 9) Process files ----------
+            // Special handling: if paths are present (true folder upload), ensure top-level folder(s) use unique names
+            // Map from original top-level name -> (finalName, folderId, folderPath)
+            var topLevelMap = new Dictionary<string, (string finalName, int folderId, string folderPath)>(StringComparer.OrdinalIgnoreCase);
+
+            if (anyHasPath)
+            {
+                // Gather distinct top-level names from the selection
+                var topLevelNames = uploadedFiles
+                    .Select(f => (f.FileName ?? "").Replace("/", Path.DirectorySeparatorChar.ToString()).Replace("\\", Path.DirectorySeparatorChar.ToString()))
+                    .Select(rel => rel.Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries))
+                    .Where(parts => parts.Length >= 1)
+                    .Select(parts => parts[0])
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
+                foreach (var rootName in topLevelNames)
+                {
+                    // Compute a unique folder name under parentPath/parentFolderId for the root of this upload
+                    string candidate = rootName;
+                    string candidatePath = Path.Combine(parentPath, candidate);
+                    int counter = 2;
+
+                    while (Directory.Exists(candidatePath) || await _context.Folders.AnyAsync(f =>
+                        f.UserID == userId && f.ParentFolderID == parentFolderId && !f.IsDeleted && f.FolderName == candidate))
+                    {
+                        candidate = $"{rootName} ({counter++})";
+                        candidatePath = Path.Combine(parentPath, candidate);
+                    }
+
+                    // Create physical directory if not exists
+                    if (!Directory.Exists(candidatePath))
+                        Directory.CreateDirectory(candidatePath);
+
+                    // Create or get DB folder for this root
+                    var rootFolder = new Folder
+                    {
+                        FolderName = candidate,
+                        ParentFolderID = parentFolderId,
+                        UserID = userId,
+                        FolderPath = candidatePath,
+                        CreatedAt = GetPakistanTime()
+                    };
+                    _context.Folders.Add(rootFolder);
+                    await _context.SaveChangesAsync();
+
+                    topLevelMap[rootName] = (candidate, rootFolder.FolderID, candidatePath);
+                }
+            }
+
             foreach (var file in uploadedFiles)
             {
                 if (file.Length <= 0) continue;
@@ -284,9 +363,20 @@ namespace Drop1.Api.Controllers
                     currentParentId = createdRootFolderId;
                     currentPath = createdRootFolderPath;
                 }
+                else if (anyHasPath && parts.Length >= 1)
+                {
+                    // Use the unique root created for this top-level folder
+                    var rootName = parts[0];
+                    if (topLevelMap.TryGetValue(rootName, out var rootInfo))
+                    {
+                        currentParentId = rootInfo.folderId;
+                        currentPath = rootInfo.folderPath;
+                    }
+                }
 
                 // ensure folder structure
-                for (int i = 0; i < parts.Length - 1; i++)
+                int startIndex = (anyHasPath && parts.Length >= 1) ? 1 : 0; // skip the original top-level; we've mapped it to unique folder
+                for (int i = startIndex; i < parts.Length - 1; i++)
                 {
                     var folderName = parts[i];
                     currentPath = Path.Combine(currentPath, folderName);
@@ -775,6 +865,8 @@ namespace Drop1.Api.Controllers
             ZipFile.CreateFromDirectory(folder.FolderPath, zipPath);
 
             var zipBytes = await System.IO.File.ReadAllBytesAsync(zipPath);
+            // Expose Content-Disposition so frontend can read filename
+            Response.Headers["Access-Control-Expose-Headers"] = "Content-Disposition";
             return File(zipBytes, "application/zip", zipFileName);
         }
 
@@ -909,7 +1001,27 @@ namespace Drop1.Api.Controllers
 
             try
             {
+                // Sum sizes of all deleted files under this folder (recursively) using path prefix
+                string sep = Path.DirectorySeparatorChar.ToString();
+                string alt = Path.AltDirectorySeparatorChar.ToString();
+                string prefixA = folder.FolderPath.EndsWith(sep) ? folder.FolderPath : folder.FolderPath + sep;
+                string prefixB = folder.FolderPath.EndsWith(alt) ? folder.FolderPath : folder.FolderPath + alt;
+
+                decimal totalRemovedMb = (await _context.Files
+                    .Where(f => f.UserID == userId && f.IsDeleted &&
+                        (f.FilePath.StartsWith(prefixA) || f.FilePath.StartsWith(prefixB)))
+                    .SumAsync(f => (decimal?)f.FileSizeMB)) ?? 0m;
+
                 await PermanentDeleteFolderRecursively(userId, folderId);
+
+                // Update user's used storage after deletion
+                var user = await _context.Users.FirstOrDefaultAsync(u => u.UserID == userId);
+                if (user != null && totalRemovedMb > 0)
+                {
+                    user.UsedStorageMB = Math.Max(0, user.UsedStorageMB - totalRemovedMb);
+                    _context.Users.Update(user);
+                    await _context.SaveChangesAsync();
+                }
                 return Ok(new { message = "Folder permanently deleted successfully." });
             }
             catch (Exception ex)
@@ -920,47 +1032,64 @@ namespace Drop1.Api.Controllers
 
         private async Task PermanentDeleteFolderRecursively(int userId, int folderId)
         {
-            // Get all files in this folder
+            // Delete all files in this folder
             var files = await _context.Files
                 .Where(f => f.FolderID == folderId && f.UserID == userId && f.IsDeleted)
                 .ToListAsync();
 
-            // Delete physical files
             foreach (var file in files)
             {
-                if (System.IO.File.Exists(file.FilePath))
+                var userRoot = Path.Combine(_basePath, userId.ToString());
+                var recycleBinDir = Path.Combine(userRoot, "RecycleBin");
+                var recycleCandidate = Path.Combine(recycleBinDir, Path.GetFileName(file.FilePath));
+
+                if (System.IO.File.Exists(recycleCandidate))
+                {
+                    System.IO.File.Delete(recycleCandidate);
+                }
+                else if (System.IO.File.Exists(file.FilePath))
                 {
                     System.IO.File.Delete(file.FilePath);
                 }
+
                 _context.Files.Remove(file);
             }
 
-            // Get all subfolders
+            // Get subfolders and delete recursively
             var subfolders = await _context.Folders
                 .Where(f => f.ParentFolderID == folderId && f.UserID == userId && f.IsDeleted)
                 .ToListAsync();
 
-            // Recursively delete subfolders
             foreach (var subfolder in subfolders)
             {
                 await PermanentDeleteFolderRecursively(userId, subfolder.FolderID);
             }
 
-            // Delete physical folder
+            // Finally, delete the folder itself
             var folder = await _context.Folders
                 .FirstOrDefaultAsync(f => f.FolderID == folderId && f.UserID == userId && f.IsDeleted);
 
             if (folder != null)
             {
-                if (Directory.Exists(folder.FolderPath))
+                var userRoot = Path.Combine(_basePath, userId.ToString());
+                var recycleBinDir = Path.Combine(userRoot, "RecycleBin");
+                var recycleCandidate = Path.Combine(recycleBinDir, Path.GetFileName(folder.FolderPath));
+
+                if (Directory.Exists(recycleCandidate))
+                {
+                    Directory.Delete(recycleCandidate, true);
+                }
+                else if (Directory.Exists(folder.FolderPath))
                 {
                     Directory.Delete(folder.FolderPath, true);
                 }
+
                 _context.Folders.Remove(folder);
             }
 
             await _context.SaveChangesAsync();
         }
+
 
         // =========================
         // FOLDER DETAILS API

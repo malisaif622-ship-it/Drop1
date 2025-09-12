@@ -77,6 +77,8 @@ function LoginPage() {
         const data = await response.json();
         console.log("Login successful:", data);
         setDebugInfo("Login successful! Redirecting...");
+        // Store user info in localStorage for quick access
+        localStorage.setItem('user', JSON.stringify(data));
         navigate("/dashboard");
       } else {
         const errorData = await response.text();

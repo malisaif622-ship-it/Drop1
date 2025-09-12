@@ -179,7 +179,19 @@ function FilesSection({
     event.stopPropagation();
     console.log("🎯 Menu clicked for:", itemType, "ID:", itemId, "Index:", index);
     
-    if (!itemId) {
+    // Enhanced ID extraction for search results
+    let actualId = itemId;
+    if (!actualId && index !== undefined) {
+      const item = itemType === 'folder' ? folders[index] : files[index];
+      if (item) {
+        actualId = item.id || item.FolderID || item.folderID || item.folderId || 
+                  item.FileID || item.fileID || item.fileId || 
+                  item.Id || item.ID || index;
+        console.log("🔧 Extracted ID from item:", actualId, "from item:", item);
+      }
+    }
+    
+    if (!actualId && actualId !== 0) {
       console.error("🚨 MISSING ID ERROR - itemType:", itemType, "Index:", index);
       console.log("Current folders state:", folders);
       console.log("Current files state:", files);
@@ -188,10 +200,12 @@ function FilesSection({
       } else if (itemType === 'file' && files[index]) {
         console.log("File at index", index, ":", files[index]);
       }
+      alert('Internal error: missing file ID. Refresh the page or contact support.');
+      return;
     }
     
     // Create unique menu key using both ID and index for safety
-    const menuKey = `${itemType}-${itemId || index}`;
+    const menuKey = `${itemType}-${actualId || index}`;
     console.log("Menu key:", menuKey);
     setActiveMenu(activeMenu === menuKey ? null : menuKey);
   };
@@ -345,6 +359,13 @@ function FilesSection({
         }
         
         response = await apiService.permanentDeleteFolder(folderId);
+        if (response.ok) {
+          // Optimistically remove from UI
+          setFolders(prev => prev.filter(f => {
+            const id = f.id || f.FolderID || f.folderId || f.Id || f.folderid || f.FOLDERID;
+            return String(id) !== String(folderId);
+          }));
+        }
       } else {
         const fileId = item.id || item.FileID || item.fileId || 
                      item.Id || item.fileid || item.FILEID;
@@ -357,12 +378,19 @@ function FilesSection({
         }
         
         response = await apiService.permanentDeleteFile(fileId);
+        if (response.ok) {
+          // Optimistically remove from UI
+          setFiles(prev => prev.filter(f => {
+            const id = f.id || f.FileID || f.fileId || f.Id || f.fileid || f.FILEID;
+            return String(id) !== String(fileId);
+          }));
+        }
       }
       
       if (response.ok) {
         alert("Permanently deleted successfully!");
-        loadData(); // Refresh the list
-        if (onRefresh) onRefresh(); // Trigger storage update
+        // No immediate reload required due to optimistic update; keep refresh callback for storage sync
+        if (onRefresh) onRefresh();
       } else {
         const error = await response.text();
         alert(`Error: ${error}`);
@@ -440,7 +468,11 @@ function FilesSection({
       if (itemType === 'folder') {
         response = await apiService.downloadFolder(itemId);
       } else {
-        response = await apiService.downloadFile(itemId);
+        // Build a best-effort fallback file name (name + extension)
+        const name = item.FileName || item.fileName || item.name || 'file';
+        const ext = item.FileType || item.fileType || item.extension || '';
+        const fallback = ext ? `${name}.${ext}` : name;
+        response = await apiService.downloadFile(itemId, fallback);
       }
 
       if (!response.ok) {
@@ -482,19 +514,28 @@ function FilesSection({
         
         let detailsText = '';
         if (itemType === 'folder') {
+          const folderName = details.FolderName || details.folderName || 'Unknown Folder';
+          const createdAt = details.CreatedAt || details.createdAt;
+          const createdDate = createdAt ? new Date(createdAt).toLocaleString() : 'Unknown';
+          
           detailsText = `Folder Details:\n\n` +
-            `Name: ${details.FolderName}\n` +
-            `Created: ${new Date(details.CreatedAt).toLocaleString()}\n` +
-            `Files: ${details.FileCount || 0}\n` +
-            `Subfolders: ${details.SubfolderCount || 0}\n` +
-            `Status: ${details.IsDeleted ? 'Deleted' : 'Active'}`;
+            `Name: ${folderName}\n` +
+            `Created: ${createdDate}\n` +
+            `Files: ${details.FileCount || details.fileCount || 0}\n` +
+            `Subfolders: ${details.SubfolderCount || details.subfolderCount || 0}\n` +
+            `Status: ${details.IsDeleted || details.isDeleted ? 'Deleted' : 'Active'}`;
         } else {
-          const fileName = details.FileName + (details.FileType ? '.' + details.FileType : '');
+          const fileName = details.FileName || details.fileName || 'Unknown File';
+          const fileType = details.FileType || details.fileType || '';
+          const fullFileName = fileName + (fileType ? '.' + fileType : '');
+          const uploadedAt = details.UploadedAt || details.uploadedAt;
+          const uploadedDate = uploadedAt ? new Date(uploadedAt).toLocaleString() : 'Unknown';
+          
           detailsText = `File Details:\n\n` +
-            `Name: ${fileName}\n` +
-            `Size: ${details.FileSizeMB} MB\n` +
-            `Uploaded: ${new Date(details.UploadedAt).toLocaleString()}\n` +
-            `Status: ${details.IsDeleted ? 'Deleted' : 'Active'}`;
+            `Name: ${fullFileName}\n` +
+            `Size: ${details.FileSizeMB || details.fileSizeMB || 0} MB\n` +
+            `Uploaded: ${uploadedDate}\n` +
+            `Status: ${details.IsDeleted || details.isDeleted ? 'Deleted' : 'Active'}`;
         }
         
         alert(detailsText);
